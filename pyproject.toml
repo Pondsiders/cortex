@@ -1,0 +1,50 @@
+[project]
+name = "cortex"
+version = "2.0.0"
+description = "Alpha's memory: Markdown files in the Vault, with a disposable index over them."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "click>=8.1",
+    "duckdb>=1.5",
+    "numpy>=2.1",
+    "openai>=1.60",
+    "pendulum>=3.0",
+    "python-frontmatter>=1.1",
+    "rich>=13.9",
+]
+
+# No [project.scripts] yet — entry points land when there are verbs to point at.
+
+[dependency-groups]
+dev = [
+    "basedpyright>=1.31",
+    "pytest>=8.3",
+    "ruff>=0.14",
+]
+
+[build-system]
+requires = ["uv_build>=0.5"]
+build-backend = "uv_build"
+
+[tool.ruff]
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "UP", "S", "SIM", "RUF", "D"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["D104"]
+"__main__.py" = ["D100"]
+"tests/**" = ["S101", "D100", "D101", "D102", "D103"]
+
+[tool.basedpyright]
+typeCheckingMode = "recommended"
+reportExplicitAny = false
+reportAny = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
