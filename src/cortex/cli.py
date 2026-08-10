@@ -1,0 +1,173 @@
+"""The ``cortex`` command line."""
+
+from __future__ import annotations
+
+import os
+import sys
+import time
+from pathlib import Path
+from typing import Any
+
+import click
+import pendulum
+from tqdm import tqdm
+
+from cortex import sync as sync_module
+from cortex.config import Settings
+from cortex.embeddings import BATCH_SIZE, CONCURRENCY
+
+DAY_BOUNDARY_HOUR = 6
+"""The day runs 6 AM to 6 AM, so a memory stored at 2 AM belongs to yesterday."""
+
+
+def _say(message: str) -> None:
+    """Write a status line to stderr, safely alongside an active progress bar."""
+    tqdm.write(message, file=click.get_text_stream("stderr"))
+
+
+def _run_sync(
+    settings: Settings, *, force: bool, batch_size: int, concurrency: int
+) -> sync_module.Result:
+    """Run a sync with a progress bar, returning its result."""
+    bar: tqdm[Any] | None = None
+
+    def on_start(count: int) -> None:
+        nonlocal bar
+        if count:
+            _say(f"embedding {count} memories at {concurrency} x {batch_size}")
+            bar = tqdm(total=count, unit="mem", smoothing=0.05)
+
+    def on_progress(landed: int) -> None:
+        if bar is not None:
+            _ = bar.update(landed)
+
+    try:
+        return sync_module.sync(
+            settings,
+            force=force,
+            batch_size=batch_size,
+            concurrency=concurrency,
+            on_start=on_start,
+            on_progress=on_progress,
+        )
+    finally:
+        # pyright doesn't track the nonlocal assignment made inside on_start, so it
+        # believes bar is still None here.
+        if bar is not None:
+            bar.close()  # pyright: ignore[reportUnreachable]
+
+
+@click.group()
+def cortex() -> None:
+    """Alpha's memory: Markdown files, with a disposable index over them."""
+
+
+@cortex.command()
+def store() -> None:
+    """Store a memory, reading its body from standard input.
+
+    The memory file is written first and is the thing that matters; the index is then
+    brought back in sync, which embeds the new memory and nothing else. This command
+    never computes a vector itself.
+    """
+    body = sys.stdin.read()
+    if not body.strip():
+        raise click.ClickException("refusing to store an empty memory")
+
+    settings = Settings()  # pyright: ignore[reportCallIssue]
+    created = pendulum.now()
+    day = created.subtract(hours=DAY_BOUNDARY_HOUR).format("YYYY-MM-DD")
+    folder = settings.memories_root / day
+    folder.mkdir(parents=True, exist_ok=True)
+
+    content = f"---\ncreated: {created.isoformat()}\n---\n\n{body.strip()}\n"
+    path = _write_next(folder, settings.memories_root, content)
+    click.echo(path.relative_to(settings.cortex_root))
+
+    result = _run_sync(
+        settings, force=False, batch_size=BATCH_SIZE, concurrency=CONCURRENCY
+    )
+    _say(f"index: {result.total} memories, {result.embedded} embedded")
+
+
+def _write_next(folder: Path, memories_root: Path, content: str) -> Path:
+    """Create the next available ``<id>.md`` in ``folder`` and write ``content``.
+
+    The id is one past the largest on disk. Two writers racing both scan, both guess the
+    same id, and the loser's exclusive create fails and it tries the next one.
+    """
+    next_id = _max_id(memories_root) + 1
+    while True:
+        path = folder / f"{next_id}.md"
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        except FileExistsError:
+            next_id += 1
+            continue
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            _ = handle.write(content)
+        return path
+
+
+def _max_id(memories_root: Path) -> int:
+    """Return the largest memory id on disk, or zero if there are none."""
+    largest = 0
+    for day in os.scandir(memories_root):
+        if not day.is_dir():
+            continue
+        for entry in os.scandir(day.path):
+            name = entry.name
+            if name.endswith(".md") and name[:-3].isdigit():
+                largest = max(largest, int(name[:-3]))
+    return largest
+
+
+@cortex.command()
+@click.option(
+    "--force", is_flag=True, help="Re-embed every memory, ignoring content hashes."
+)
+@click.option(
+    "--batch-size",
+    default=BATCH_SIZE,
+    show_default=True,
+    help="Texts per embedding request.",
+)
+@click.option(
+    "--concurrency",
+    default=CONCURRENCY,
+    show_default=True,
+    help="Embedding requests in flight.",
+)
+def reindex(force: bool, batch_size: int, concurrency: int) -> None:
+    """Bring the index back in sync with the Markdown files on disk.
+
+    Only memories whose file contents have changed are re-embedded, so a re-run after a
+    failure resumes rather than starting over. Forgotten memories, and memories whose
+    files have gone, drop out of the index entirely.
+    """
+    started = time.monotonic()
+    settings = Settings()  # pyright: ignore[reportCallIssue]
+
+    _say(f"root  {settings.cortex_root}")
+    _say(f"index {settings.index_root}")
+
+    result = _run_sync(
+        settings, force=force, batch_size=batch_size, concurrency=concurrency
+    )
+
+    if result.embedded == 0 and result.dropped == 0:
+        _say(f"index is current: {result.total} memories")
+    else:
+        counts = ", ".join(
+            (
+                f"{result.embedded} embedded",
+                f"{result.reused} reused",
+                f"{result.dropped} dropped",
+            )
+        )
+        elapsed = f"{time.monotonic() - started:.1f}s"
+        _say(f"indexed {result.total} memories in {elapsed} ({counts})")
+
+
+if __name__ == "__main__":
+    cortex()
