@@ -12,6 +12,7 @@ import click
 import pendulum
 from tqdm import tqdm
 
+from cortex import search as search_module
 from cortex import sync as sync_module
 from cortex.config import Settings
 from cortex.embeddings import BATCH_SIZE, CONCURRENCY
@@ -120,6 +121,39 @@ def _max_id(memories_root: Path) -> int:
             if name.endswith(".md") and name[:-3].isdigit():
                 largest = max(largest, int(name[:-3]))
     return largest
+
+
+@cortex.command()
+@click.option(
+    "-k",
+    "limit",
+    default=search_module.DEFAULT_LIMIT,
+    show_default=True,
+    help="How many memories to return.",
+)
+def search(limit: int) -> None:
+    """Search the memories, reading the query from standard input.
+
+    Scores are reported rather than filtered. The header carries the query's own
+    similarity to the whole corpus, which is what makes a raw cosine legible: 0.37
+    against a 0.14 baseline is a strong hit, and against a 0.43 baseline it is nothing.
+    """
+    query = sys.stdin.read().strip()
+    if not query:
+        raise click.ClickException("refusing to search for nothing")
+
+    settings = Settings()  # pyright: ignore[reportCallIssue]
+    results = search_module.search(settings, query, limit=limit)
+
+    scale = f"{results.baseline:.4f} ± {results.deviation:.4f}"
+    click.echo(f"{results.corpus:,} memories · this query's corpus baseline {scale}")
+    for hit in results.hits:
+        when = pendulum.instance(hit.created).format("ddd MMM D YYYY, h:mm A")
+        # ruff reads the sigma as a confusable 'o'; it's display text, not a name.
+        sigma = f"{hit.sigma:+.2f}σ"  # noqa: RUF001
+        click.echo(f"\n#{hit.id}  {hit.score:.4f}  {sigma}  {when}")
+        click.echo(f"{hit.path}\n")
+        click.echo(hit.body)
 
 
 @cortex.command()

@@ -1,7 +1,9 @@
-"""Turning memory bodies into vectors.
+"""Turning memory bodies and search queries into vectors.
 
-Documents are embedded bare. Queries get the embedding model's instruction prefix;
-that belongs to the search path, not here.
+Documents are embedded bare; queries are wrapped in the instruction prefix Qwen 3
+Embedding's model card prescribes. Both halves live here because both are coupled to
+the specific model, and if the model is ever swapped they have to be revisited
+together — along with re-embedding the whole corpus.
 
 Ember saturates at four concurrent requests — the card is compute-bound past that, and
 batching inside a request only eliminates round trips, because llama-server processes a
@@ -26,6 +28,11 @@ from cortex.config import Settings
 
 BATCH_SIZE = 8
 CONCURRENCY = 4
+
+QUERY_TASK = (
+    "Given a search query, retrieve relevant passages that are similar to the query"
+)
+"""The instruction Qwen 3 Embedding is given for query-side inputs."""
 
 
 @dataclass(frozen=True)
@@ -69,6 +76,20 @@ class Embedder:
             model=self._model, input=["dimension probe"]
         )
         return len(response.data[0].embedding)
+
+    def embed_query(self, query: str) -> Sequence[float]:
+        """Embed one search query, with the model's instruction prefix applied.
+
+        Args:
+            query: The raw query text.
+
+        Returns:
+            The query vector.
+        """
+        response = self._client.embeddings.create(
+            model=self._model, input=[f"Instruct: {QUERY_TASK}\nQuery:{query}"]
+        )
+        return response.data[0].embedding
 
     def _embed(self, indices: Sequence[int], texts: Sequence[str]) -> EmbeddedBatch:
         """Embed one batch, preserving order."""
