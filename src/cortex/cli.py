@@ -145,12 +145,12 @@ def search(limit: int) -> None:
     settings = Settings()  # pyright: ignore[reportCallIssue]
     results = search_module.search(settings, query, limit=limit)
 
-    scale = f"{results.baseline:.4f} ± {results.deviation:.4f}"
+    scale = f"{results.baseline:.3f} ± {results.deviation:.3f}"
     click.echo(f"{results.corpus:,} memories · this query's corpus baseline {scale}")
     for hit in results.hits:
         when = pendulum.instance(hit.created).format("ddd MMM D YYYY, h:mm A")
         # ruff reads the sigma as a confusable 'o'; it's display text, not a name.
-        sigma = f"{hit.sigma:+.2f}σ"  # noqa: RUF001
+        sigma = f"{hit.sigma:+.1f}σ"  # noqa: RUF001
         click.echo(f"\n#{hit.id}  {hit.score:.4f}  {sigma}  {when}")
         click.echo(f"{hit.path}\n")
         click.echo(hit.body)

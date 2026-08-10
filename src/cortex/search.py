@@ -73,7 +73,10 @@ def search(settings: Settings, query: str, limit: int = DEFAULT_LIMIT) -> Result
         msg = f"no index at {settings.index_root}; run cortex reindex"
         raise index_module.IndexError_(msg)
 
-    vector = np.asarray(Embedder(settings).embed_query(query), dtype=np.float32)
+    # Both sides unit-length, so the dot product below is cosine similarity.
+    vector = index_module.normalize(
+        np.asarray([Embedder(settings).embed_query(query)], dtype=np.float32)
+    )[0]
     scores = np.asarray(loaded.vectors) @ vector
 
     baseline = float(scores.mean())

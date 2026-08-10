@@ -39,9 +39,32 @@ VECTORS = "vectors.npy"
 ENTRIES = "index.jsonl"
 MANIFEST = "manifest.json"
 
+TMP_VECTORS = "vectors.tmp.npy"
+TMP_ENTRIES = "index.jsonl.tmp"
+TMP_MANIFEST = "manifest.json.tmp"
+
 
 class IndexError_(Exception):
     """Raised when the index on disk cannot be trusted."""
+
+
+def normalize(vectors: np.ndarray) -> np.ndarray:
+    """Scale each row to unit length.
+
+    Search is a plain dot product against these rows, which equals cosine similarity
+    only if both sides are unit vectors. The embedding endpoint happens to return them
+    that way, but nothing downstream checks, and a wrong-but-plausible score is worse
+    than an error. Doing it here makes the property true rather than assumed, and costs
+    nothing on vectors that already have it.
+
+    Args:
+        vectors: An ``(N, dimensions)`` array.
+
+    Returns:
+        The same array with every row scaled to length one. Zero rows are left alone.
+    """
+    lengths = np.linalg.norm(vectors, axis=1, keepdims=True)
+    return np.ascontiguousarray(vectors / np.where(lengths == 0.0, 1.0, lengths))
 
 
 @dataclass(frozen=True)
@@ -155,13 +178,13 @@ def write(
 
     root.mkdir(parents=True, exist_ok=True)
 
-    tmp_vectors = root / f"{VECTORS}.tmp.npy"
+    tmp_vectors = root / TMP_VECTORS
     with tmp_vectors.open("wb") as handle:
-        np.save(handle, np.ascontiguousarray(vectors, dtype=np.float32))
+        np.save(handle, normalize(np.asarray(vectors, dtype=np.float32)))
         handle.flush()
         os.fsync(handle.fileno())
 
-    tmp_entries = root / f"{ENTRIES}.tmp"
+    tmp_entries = root / TMP_ENTRIES
     with tmp_entries.open("w", encoding="utf-8") as handle:
         for entry in entries:
             _ = handle.write(
@@ -179,7 +202,7 @@ def write(
         handle.flush()
         os.fsync(handle.fileno())
 
-    tmp_manifest = root / f"{MANIFEST}.tmp"
+    tmp_manifest = root / TMP_MANIFEST
     with tmp_manifest.open("w", encoding="utf-8") as handle:
         json.dump(
             {

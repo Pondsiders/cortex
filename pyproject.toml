@@ -42,13 +42,17 @@ convention = "google"
 "__init__.py" = ["D104"]
 "__main__.py" = ["D100"]
 "tests/**" = ["S101", "D100", "D101", "D102", "D103"]
-# The only interpolation into SQL here is the module-level TABLE constant.
-"src/cortex/database.py" = ["S608"]
 
 [tool.basedpyright]
 typeCheckingMode = "recommended"
 reportExplicitAny = false
 reportAny = false
+# Setting exclude replaces pyright's defaults, which are what keep it out of .venv,
+# so include has to be explicit too.
+include = ["src", "scripts"]
+# A one-off migration script carrying its own PEP 723 dependencies, so its imports
+# are not resolvable from the project environment.
+exclude = ["scripts/migrate_from_duckdb.py"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

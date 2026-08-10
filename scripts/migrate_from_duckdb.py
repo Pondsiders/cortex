@@ -8,7 +8,7 @@
 Re-embedding all nineteen thousand memories takes about forty-three minutes of GPU. The
 vectors already in DuckDB were written by a single code path and are perfectly good, so
 this moves them across rather than making them again. It writes the same three files
-``cortex database reindex`` writes, carrying the content hashes over unchanged — which
+``cortex reindex`` writes, carrying the content hashes over unchanged — which
 is the point, because the proof that this worked is that the very next reindex finds
 nothing stale.
 
