@@ -13,11 +13,15 @@ file, ``${HOME}`` expands and a bare ``$HOME`` does not. Rather than document th
 from __future__ import annotations
 
 import os
+import re
+import tempfile
 from pathlib import Path
 from typing import ClassVar
 
 from pydantic import DirectoryPath, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
 
 
 def config_home() -> Path:
@@ -38,6 +42,25 @@ def state_home() -> Path:
 def config_path() -> Path:
     """Return the path to the global Cortex config file."""
     return config_home() / "cortex" / "config.env"
+
+
+def session_path(name: str, session_id: str, suffix: str) -> Path:
+    """Return a per-session scratch file in the system temp directory.
+
+    The temp directory is the right lifetime for anything scoped to a session: it dies
+    when the machine cleans up after itself. It is also shared with every other program
+    on the machine, hence the ``cortex-`` prefix.
+
+    The session id arrives from the harness as JSON, so it is scrubbed to characters
+    that cannot walk out of the temp directory rather than trusted as a filename.
+
+    Args:
+        name: What the file is for, for example ``"seen"``.
+        session_id: The harness's identifier for this session.
+        suffix: The file extension, dot included.
+    """
+    safe = _UNSAFE.sub("_", session_id)
+    return Path(tempfile.gettempdir()) / f"cortex-{name}-{safe}{suffix}"
 
 
 class Settings(BaseSettings):

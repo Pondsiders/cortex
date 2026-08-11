@@ -19,25 +19,17 @@ context.
 
 from __future__ import annotations
 
-import re
-import tempfile
 from pathlib import Path
 from typing import final
 
 import numpy as np
 
-_UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
+from cortex.config import session_path
 
 
 def mask_path(session_id: str) -> Path:
-    """Return the mask file for a session.
-
-    The session id arrives from the harness as JSON, so it is scrubbed to characters
-    that cannot walk out of the temp directory rather than trusted as a filename.
-    """
-    return (
-        Path(tempfile.gettempdir()) / f"cortex-seen-{_UNSAFE.sub('_', session_id)}.npy"
-    )
+    """Return the mask file for a session."""
+    return session_path("seen", session_id, ".npy")
 
 
 @final
