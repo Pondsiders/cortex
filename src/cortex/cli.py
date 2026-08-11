@@ -13,7 +13,7 @@ import click
 import pendulum
 from tqdm import tqdm
 
-from cortex import clock, log
+from cortex import clock, console, log
 from cortex import recollection as recollection_module
 from cortex import reflection as reflection_module
 from cortex import search as search_module
@@ -24,7 +24,7 @@ from cortex.embeddings import BATCH_SIZE, CONCURRENCY
 
 def _say(message: str) -> None:
     """Write a status line to stderr, safely alongside an active progress bar."""
-    tqdm.write(message, file=click.get_text_stream("stderr"))
+    tqdm.write(message, file=console.progress_file())
 
 
 def _run_sync(
@@ -37,7 +37,12 @@ def _run_sync(
         nonlocal bar
         if count:
             _say(f"embedding {count} memories at {concurrency} x {batch_size}")
-            bar = tqdm(total=count, unit="mem", smoothing=0.05)
+            bar = tqdm(
+                total=count,
+                unit="mem",
+                smoothing=0.05,
+                file=console.progress_file(),
+            )
 
     def on_progress(landed: int) -> None:
         if bar is not None:
@@ -83,7 +88,7 @@ def store() -> None:
 
     content = f"---\ncreated: {created.isoformat()}\n---\n\n{body.strip()}\n"
     path = _write_next(folder, settings.memories_root, content)
-    click.echo(path.relative_to(settings.cortex_root))
+    console.out(str(path.relative_to(settings.cortex_root)))
 
     result = _run_sync(
         settings, force=False, batch_size=BATCH_SIZE, concurrency=CONCURRENCY
@@ -146,14 +151,14 @@ def search(limit: int) -> None:
     results = search_module.search(settings, query, limit=limit)
 
     scale = f"{results.baseline:.3f} ± {results.deviation:.3f}"
-    click.echo(f"{results.corpus:,} memories · this query's corpus baseline {scale}")
+    console.out(f"{results.corpus:,} memories · this query's corpus baseline {scale}")
     for hit in results.hits:
         when = pendulum.instance(hit.created).format("ddd MMM D YYYY, h:mm A")
         # ruff reads the sigma as a confusable 'o'; it's display text, not a name.
         sigma = f"{hit.sigma:+.1f}σ"  # noqa: RUF001
-        click.echo(f"\n#{hit.id}  {hit.score:.4f}  {sigma}  {when}")
-        click.echo(f"{hit.path}\n")
-        click.echo(hit.body)
+        console.out(f"\n#{hit.id}  {hit.score:.4f}  {sigma}  {when}")
+        console.out(f"{hit.path}\n")
+        console.out(hit.body)
 
 
 @cortex.command()
@@ -257,7 +262,7 @@ def hook_recollection() -> None:
 
     if not context:
         return
-    click.echo(
+    console.out(
         json.dumps(
             {
                 "hookSpecificOutput": {
@@ -296,7 +301,7 @@ def hook_reflection() -> None:
         return
 
     log.write("reflection", session_id=session_id, turn=turn)
-    click.echo(
+    console.out(
         json.dumps(
             {
                 "hookSpecificOutput": {
