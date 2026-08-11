@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import time
@@ -12,13 +13,12 @@ import click
 import pendulum
 from tqdm import tqdm
 
+from cortex import clock, log
+from cortex import recollection as recollection_module
 from cortex import search as search_module
 from cortex import sync as sync_module
 from cortex.config import Settings
 from cortex.embeddings import BATCH_SIZE, CONCURRENCY
-
-DAY_BOUNDARY_HOUR = 6
-"""The day runs 6 AM to 6 AM, so a memory stored at 2 AM belongs to yesterday."""
 
 
 def _say(message: str) -> None:
@@ -77,8 +77,7 @@ def store() -> None:
 
     settings = Settings()  # pyright: ignore[reportCallIssue]
     created = pendulum.now()
-    day = created.subtract(hours=DAY_BOUNDARY_HOUR).format("YYYY-MM-DD")
-    folder = settings.memories_root / day
+    folder = settings.memories_root / clock.pondside_day(created)
     folder.mkdir(parents=True, exist_ok=True)
 
     content = f"---\ncreated: {created.isoformat()}\n---\n\n{body.strip()}\n"
@@ -201,6 +200,78 @@ def reindex(force: bool, batch_size: int, concurrency: int) -> None:
         )
         elapsed = f"{time.monotonic() - started:.1f}s"
         _say(f"indexed {result.total} memories in {elapsed} ({counts})")
+
+
+@cortex.group()
+def hook() -> None:
+    """Claude Code hook scripts. Each reads its event JSON from standard input."""
+
+
+@hook.command("recollection")
+def hook_recollection() -> None:
+    """Recall memories for a UserPromptSubmit event and return them as context.
+
+    Recollection is enrichment rather than a gate, so nothing here is allowed to cost
+    Jeffery his turn. In particular it must never exit 2, which Claude Code reads as a
+    blocking error on this event: it discards the prompt. Every failure exits 1 with a
+    line on stderr, which the harness shows in the transcript and then carries on.
+    """
+    started = time.monotonic()
+    try:
+        event: dict[str, Any] = json.loads(sys.stdin.read())
+        prompt = str(event.get("prompt", ""))
+        session_id = str(event["session_id"])
+    except (ValueError, KeyError) as error:
+        raise SystemExit(_bail(f"unusable hook input: {error}")) from error
+
+    try:
+        settings = Settings()  # pyright: ignore[reportCallIssue]
+        result = recollection_module.recollect(
+            settings, prompt=prompt, session_id=session_id
+        )
+        context = result.context()
+    # Every failure is caught, because a hook that raises is a hook that costs a turn.
+    except Exception as error:
+        raise SystemExit(_bail(f"recollection failed: {error}")) from error
+
+    elapsed = int((time.monotonic() - started) * 1000)
+    log.write(
+        "recollection",
+        session_id=session_id,
+        prompt_id=event.get("prompt_id"),
+        ms=elapsed,
+        degraded=result.degraded,
+        prompt=prompt,
+        queries=[
+            {"q": m.query, "id": m.id, "score": round(m.score, 4)}
+            for m in result.memories
+            if m.query is not None and m.score is not None
+        ],
+        unanswered=[
+            q for q in result.queries if q not in {m.query for m in result.memories}
+        ],
+        lagniappe=next((m.id for m in result.memories if m.query is None), None),
+        chars=len(context),
+    )
+
+    if not context:
+        return
+    click.echo(
+        json.dumps(
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "UserPromptSubmit",
+                    "additionalContext": context,
+                }
+            }
+        )
+    )
+
+
+def _bail(message: str) -> int:
+    """Report a hook failure without blocking the turn, and return its exit code."""
+    print(f"cortex: {message}", file=sys.stderr)
+    return 1
 
 
 if __name__ == "__main__":

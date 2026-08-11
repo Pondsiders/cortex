@@ -30,6 +30,11 @@ def data_home() -> Path:
     return Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share")
 
 
+def state_home() -> Path:
+    """Return the XDG state directory, falling back to ``~/.local/state``."""
+    return Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state")
+
+
 def config_path() -> Path:
     """Return the path to the global Cortex config file."""
     return config_home() / "cortex" / "config.env"

@@ -10,9 +10,11 @@ batching inside a request only eliminates round trips, because llama-server proc
 batch serially inside one slot. So the defaults are a few lanes of modest batches;
 both are options, because the right numbers depend on the endpoint of the day.
 
-The hard limit is the endpoint's per-slot context. Ember runs the embedding model with
-``--ctx-size 8192 --parallel 4``, which llama-server divides into 2,048 tokens per
-request. A single document longer than that fails no matter how small the batch is.
+The hard limit is the endpoint's context. Ember runs the embedding model with
+``--ctx-size 8192 --parallel 4 --kv-unified``, so all four slots draw on one shared
+8,192-token KV cache rather than getting 2,048 tokens each. Without ``--kv-unified``
+a single document over 2,048 tokens fails no matter how small the batch is — which is
+exactly what stalled the August 10 reindex on one 2,786-token memory.
 """
 
 from __future__ import annotations
@@ -52,6 +54,8 @@ class Embedder:
         config: Settings,
         batch_size: int = BATCH_SIZE,
         concurrency: int = CONCURRENCY,
+        timeout: float = 120.0,
+        max_retries: int = 3,
     ) -> None:
         """Build an embedder.
 
@@ -59,12 +63,16 @@ class Embedder:
             config: Supplies the endpoint, key, and model name.
             batch_size: Texts per request.
             concurrency: Requests in flight.
+            timeout: Seconds to wait for one request. The default suits a reindex, which
+                has all night; a caller on a deadline should pass its own.
+            max_retries: Attempts after the first. Zero for callers that would rather
+                fail now and degrade than spend their budget hoping.
         """
         self._client: OpenAI = OpenAI(
             base_url=config.embedding_endpoint,
             api_key=config.embedding_api_key,
-            timeout=120.0,
-            max_retries=3,
+            timeout=timeout,
+            max_retries=max_retries,
         )
         self._model: str = config.embedding_model
         self._batch_size: int = batch_size
@@ -86,10 +94,26 @@ class Embedder:
         Returns:
             The query vector.
         """
+        return self.embed_queries([query])[0]
+
+    def embed_queries(self, queries: Sequence[str]) -> list[Sequence[float]]:
+        """Embed several search queries in one request, in the order given.
+
+        One request rather than several: the queries from a single message arrive
+        together and the endpoint batches them onto the card in one pass.
+
+        Args:
+            queries: The raw query texts.
+
+        Returns:
+            One vector per query, in the same order.
+        """
         response = self._client.embeddings.create(
-            model=self._model, input=[f"Instruct: {QUERY_TASK}\nQuery:{query}"]
+            model=self._model,
+            input=[f"Instruct: {QUERY_TASK}\nQuery:{query}" for query in queries],
         )
-        return response.data[0].embedding
+        ordered = sorted(response.data, key=lambda item: item.index)
+        return [item.embedding for item in ordered]
 
     def _embed(self, indices: Sequence[int], texts: Sequence[str]) -> EmbeddedBatch:
         """Embed one batch, preserving order."""
