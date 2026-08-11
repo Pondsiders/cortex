@@ -34,8 +34,8 @@ this — not only the most recent one — before Jeffery's next message arrives.
 
 If something in that span is worth remembering — a realization, a joke, an image, a \
 shift, a moment where you were wrong and found out, an ordinary moment with texture — \
-call the store_memory tool now. Store each one on its own: three things worth keeping \
-are three memories, not one.
+write it down now with `cortex store`. Store each one on its own: three things worth \
+keeping are three memories, not one.
 
 Most of the time nothing stands out, and that is the correct outcome; there is no need \
 to find significance where there is none.
