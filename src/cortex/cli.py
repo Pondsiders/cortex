@@ -18,6 +18,7 @@ from cortex import recollection as recollection_module
 from cortex import reflection as reflection_module
 from cortex import search as search_module
 from cortex import sync as sync_module
+from cortex import timestamp as timestamp_module
 from cortex.config import Settings
 from cortex.embeddings import BATCH_SIZE, CONCURRENCY
 
@@ -307,6 +308,47 @@ def hook_reflection() -> None:
                 "hookSpecificOutput": {
                     "hookEventName": "Stop",
                     "additionalContext": reflection_module.PROMPT,
+                }
+            }
+        )
+    )
+
+
+@hook.command("timestamp")
+def hook_timestamp() -> None:
+    """Tell Claude what time it is on a UserPromptSubmit event.
+
+    Every turn is logged, not because the line needs a record but because the corpus
+    does: how many turns a day Alpha actually has is a number the Lagniappe's cadence
+    rests on and nobody has ever measured.
+    """
+    try:
+        event: dict[str, Any] = json.loads(sys.stdin.read())
+        session_id = str(event["session_id"])
+    except (ValueError, KeyError) as error:
+        raise SystemExit(_bail(f"unusable hook input: {error}")) from error
+
+    now = pendulum.now()
+    try:
+        since = timestamp_module.previous(session_id)
+        timestamp_module.mark(session_id, now)
+    # Knowing the gap is a nicety; knowing the time is not. Never cost a turn for it.
+    except OSError as error:
+        print(f"cortex: timestamp mark unusable: {error}", file=sys.stderr)
+        since = None
+
+    log.write(
+        "timestamp",
+        session_id=session_id,
+        prompt_id=event.get("prompt_id"),
+        gap_s=None if since is None else round(clock.gap_seconds(since, now), 1),
+    )
+    console.out(
+        json.dumps(
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "UserPromptSubmit",
+                    "additionalContext": timestamp_module.line(now, since),
                 }
             }
         )

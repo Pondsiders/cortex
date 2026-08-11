@@ -34,3 +34,15 @@ def pso8601(moment: datetime) -> str:
 def age(moment: datetime) -> str:
     """Say how long ago a moment was, in words: ``2 hours ago``, ``5 weeks ago``."""
     return pendulum.instance(moment).diff_for_humans()
+
+
+def gap(earlier: datetime, later: datetime | None = None) -> str:
+    """Say how much time separates two moments: ``3 minutes``, ``2 hours``."""
+    end = pendulum.instance(later) if later else pendulum.now()
+    return end.diff_for_humans(pendulum.instance(earlier), absolute=True)
+
+
+def gap_seconds(earlier: datetime, later: datetime | None = None) -> float:
+    """Return the seconds between two moments, for a record rather than a reader."""
+    end = pendulum.instance(later) if later else pendulum.now()
+    return (end - pendulum.instance(earlier)).total_seconds()
