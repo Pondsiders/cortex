@@ -110,7 +110,9 @@ def headline(path: Path, root: Path) -> str:
         first = memories.read(path, root).body.strip().splitlines()[0]
     except (OSError, IndexError, memories.MemoryError_):
         return ""
-    first = _STAMP.sub("", first.replace("**", "")).strip()
+    # A memory that opens on a quotation would otherwise be reported inside a second
+    # pair of them, which reads as a typo rather than as a quote.
+    first = _STAMP.sub("", first.replace("**", "")).strip().strip("\"'“”")
     return first[: HEADLINE - 1] + "…" if len(first) > HEADLINE else first
 
 
