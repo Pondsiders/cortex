@@ -14,6 +14,8 @@ import pendulum
 from tqdm import tqdm
 
 from cortex import clock, console, log
+from cortex import memories as memories_module
+from cortex import monitor as monitor_module
 from cortex import recollection as recollection_module
 from cortex import reflection as reflection_module
 from cortex import search as search_module
@@ -118,15 +120,8 @@ def _write_next(folder: Path, memories_root: Path, content: str) -> Path:
 
 def _max_id(memories_root: Path) -> int:
     """Return the largest memory id on disk, or zero if there are none."""
-    largest = 0
-    for day in os.scandir(memories_root):
-        if not day.is_dir():
-            continue
-        for entry in os.scandir(day.path):
-            name = entry.name
-            if name.endswith(".md") and name[:-3].isdigit():
-                largest = max(largest, int(name[:-3]))
-    return largest
+    path = memories_module.latest(memories_root)
+    return 0 if path is None else int(path.stem)
 
 
 @cortex.command()
@@ -207,6 +202,69 @@ def reindex(force: bool, batch_size: int, concurrency: int) -> None:
         )
         elapsed = f"{time.monotonic() - started:.1f}s"
         _say(f"indexed {result.total} memories in {elapsed} ({counts})")
+
+
+@cortex.group()
+def monitor() -> None:
+    """Watch for stretches of quiet, and hush the watching while it suits."""
+
+
+@monitor.command("start")
+@click.option(
+    "--interval",
+    default=monitor_module.INTERVAL,
+    show_default=True,
+    help="Seconds of quiet before speaking, and between repeats.",
+)
+@click.option(
+    "--poll",
+    default=monitor_module.POLL,
+    show_default=True,
+    help="Seconds between looks at the disk.",
+)
+def monitor_start(interval: float, poll: float) -> None:
+    """Report every stretch of quiet longer than the interval, until stopped.
+
+    This is the one Cortex command whose output is the entire product, which makes it a
+    filter rather than a command with a side effect. So it dies when nobody is reading:
+    a watcher printing into a closed pipe looks exactly like a watcher with nothing to
+    report, and that is the one thing it must never look like.
+    """
+    settings = Settings()  # pyright: ignore[reportCallIssue]
+
+    def emit(line: str) -> None:
+        console.out(line)
+        log.write("monitor", line=line)
+        if console.deaf(sys.stdout):
+            raise SystemExit(_bail("stopping: nobody is reading"))
+
+    try:
+        monitor_module.watch(settings, interval=interval, poll=poll, say=emit)
+    except KeyboardInterrupt:
+        console.say("cortex monitor stopped")
+
+
+@monitor.command("pause")
+def monitor_pause() -> None:
+    """Hush every watcher on this machine for as long as this command runs.
+
+    The lock lives exactly as long as the terminal holding it, which is the point: a
+    pause you can walk away from and forget would go on hushing long after you meant it
+    to stop. Ctrl-C to end it. A pause killed outright leaves the lock behind, and the
+    watchers clear it themselves once they see its owner is gone.
+    """
+    monitor_module.hold()
+    log.write("monitor", line="paused", pid=os.getpid())
+    console.out(f"cortex monitor paused · pid {os.getpid()} · Ctrl-C to resume")
+    try:
+        while True:
+            time.sleep(monitor_module.POLL)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        monitor_module.release()
+        log.write("monitor", line="resumed")
+        console.out("cortex monitor resumed")
 
 
 @cortex.group()

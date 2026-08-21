@@ -10,6 +10,7 @@ The disk is authoritative. Everything here reads; nothing here writes.
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -102,6 +103,40 @@ def read(path: Path, root: Path) -> Memory:
         forgotten=forgotten,
         content_hash=_hash(data),
     )
+
+
+def latest(memories_root: Path) -> Path | None:
+    """Return the path of the highest-numbered memory on disk.
+
+    Filenames only: nothing is opened and nothing is parsed. That is what makes this
+    cheap enough to call on a timer, where :func:`discover` — which reads and parses
+    every memory there is — would not be.
+
+    The whole tree is scanned rather than today's day folder, so that nothing has to
+    know about the 6 AM seam and nothing can be left watching a folder the day has
+    moved on from.
+
+    Args:
+        memories_root: The ``memories`` directory.
+
+    Returns:
+        The path to the largest ``<id>.md``, or None if the tree holds no memories.
+    """
+    if not memories_root.is_dir():
+        return None
+
+    best: tuple[int, Path] | None = None
+    for day in os.scandir(memories_root):
+        if not day.is_dir():
+            continue
+        for entry in os.scandir(day.path):
+            match = _MEMORY_NAME.match(entry.name)
+            if match is None:
+                continue
+            found = int(match.group(1))
+            if best is None or found > best[0]:
+                best = (found, Path(entry.path))
+    return None if best is None else best[1]
 
 
 def discover(memories_root: Path, root: Path) -> Iterator[Memory]:

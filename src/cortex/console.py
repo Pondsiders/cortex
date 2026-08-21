@@ -18,6 +18,12 @@ frightening message about output nobody was reading.
 
 This is the near half of the guarantee. It cannot help with a kill, so the far half is
 that the index is a cache: whatever drifts, a reindex settles.
+
+Muting is the right answer for a command that has already done something. It is the
+wrong answer for one whose output *is* the product: a long-running watcher that goes
+deaf keeps running, printing into a closed pipe, indistinguishable from a watcher with
+nothing to report. That command is a filter and should die like one, so :func:`deaf`
+lets it ask whether anyone is still there.
 """
 
 from __future__ import annotations
@@ -49,6 +55,17 @@ def out(message: str = "") -> None:
 def say(message: str = "") -> None:
     """Write a line of commentary to stderr."""
     _put(sys.stderr, message + "\n")
+
+
+def deaf(stream: TextIO) -> bool:
+    """Report whether writes to a stream have stopped going anywhere.
+
+    True once a write to it has failed, which is permanent for the life of the process.
+
+    Args:
+        stream: The stream to ask about, usually ``sys.stdout``.
+    """
+    return id(stream) in _muted
 
 
 def progress_file() -> Sink:
