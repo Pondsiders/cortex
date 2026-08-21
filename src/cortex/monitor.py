@@ -152,7 +152,7 @@ def watch(
     hushed: int | None = None
 
     after = clock.gap(pendulum.now().subtract(seconds=interval))
-    armed = f"cortex monitor armed · quiet after {after}"
+    armed = f"cortex monitor armed · speaks after {after} of quiet"
     if seen is not None:
         armed += f" · last #{seen.stem}"
     say(armed)
