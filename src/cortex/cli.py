@@ -17,7 +17,6 @@ from cortex import clock, console, log
 from cortex import memories as memories_module
 from cortex import monitor as monitor_module
 from cortex import recollection as recollection_module
-from cortex import reflection as reflection_module
 from cortex import search as search_module
 from cortex import sync as sync_module
 from cortex import timestamp as timestamp_module
@@ -327,45 +326,6 @@ def hook_recollection() -> None:
                 "hookSpecificOutput": {
                     "hookEventName": "UserPromptSubmit",
                     "additionalContext": context,
-                }
-            }
-        )
-    )
-
-
-@hook.command("reflection")
-def hook_reflection() -> None:
-    """Ask Claude to store a memory on a Stop event, every third turn.
-
-    Like recollection this must never exit 2, which Claude Code reads as a blocking
-    error. Unlike recollection, a Stop hook that keeps the conversation going is fired
-    again once Claude has answered, so the second firing is dropped rather than counted.
-    """
-    try:
-        event: dict[str, Any] = json.loads(sys.stdin.read())
-        session_id = str(event["session_id"])
-    except (ValueError, KeyError) as error:
-        raise SystemExit(_bail(f"unusable hook input: {error}")) from error
-
-    if event.get("stop_hook_active"):
-        return
-
-    try:
-        turn = reflection_module.bump(session_id)
-    # A hook that raises is a hook that costs a turn.
-    except OSError as error:
-        raise SystemExit(_bail(f"reflection failed: {error}")) from error
-
-    if not reflection_module.due(turn):
-        return
-
-    log.write("reflection", session_id=session_id, turn=turn)
-    console.out(
-        json.dumps(
-            {
-                "hookSpecificOutput": {
-                    "hookEventName": "Stop",
-                    "additionalContext": reflection_module.PROMPT,
                 }
             }
         )
