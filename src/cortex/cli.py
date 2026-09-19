@@ -14,6 +14,7 @@ import pendulum
 from tqdm import tqdm
 
 from cortex import clock, console, log
+from cortex import index as index_module
 from cortex import memories as memories_module
 from cortex import monitor as monitor_module
 from cortex import recollection as recollection_module
@@ -123,6 +124,16 @@ def _max_id(memories_root: Path) -> int:
     return 0 if path is None else int(path.stem)
 
 
+def _print_hits(results: search_module.Results) -> None:
+    for hit in results.hits:
+        when = pendulum.instance(hit.created).format("ddd MMM D YYYY, h:mm A")
+        # ruff reads the sigma as a confusable 'o'; it's display text, not a name.
+        sigma = f"{hit.sigma:+.1f}σ"  # noqa: RUF001
+        console.out(f"\n#{hit.id}  {hit.score:.4f}  {sigma}  {when}")
+        console.out(f"{hit.path}\n")
+        console.out(hit.body)
+
+
 @cortex.command()
 @click.option(
     "-k",
@@ -147,13 +158,45 @@ def search(limit: int) -> None:
 
     scale = f"{results.baseline:.3f} ± {results.deviation:.3f}"
     console.out(f"{results.corpus:,} memories · this query's corpus baseline {scale}")
-    for hit in results.hits:
-        when = pendulum.instance(hit.created).format("ddd MMM D YYYY, h:mm A")
-        # ruff reads the sigma as a confusable 'o'; it's display text, not a name.
-        sigma = f"{hit.sigma:+.1f}σ"  # noqa: RUF001
-        console.out(f"\n#{hit.id}  {hit.score:.4f}  {sigma}  {when}")
-        console.out(f"{hit.path}\n")
-        console.out(hit.body)
+    _print_hits(results)
+
+
+HEADLINE_WIDTH = 100
+
+
+@cortex.command()
+@click.argument("memory_id", metavar="ID", type=int)
+@click.option(
+    "-k",
+    "limit",
+    default=search_module.DEFAULT_LIMIT,
+    show_default=True,
+    help="How many neighbors to return.",
+)
+def similar(memory_id: int, limit: int) -> None:
+    """Show the memories nearest to memory ID.
+
+    The memory's stored vector is the query, so nothing is embedded and this works with
+    the embedding endpoint down. The memory itself is never among its own neighbors.
+    Scores read the same way they do for search.
+    """
+    settings = Settings()  # pyright: ignore[reportCallIssue]
+    try:
+        results = search_module.similar(settings, memory_id, limit=limit)
+    except index_module.IndexError_ as error:
+        raise click.ClickException(str(error)) from error
+
+    first = (results.source or "").strip().splitlines()[:1]
+    headline = first[0] if first else ""
+    if len(headline) > HEADLINE_WIDTH:
+        headline = headline[: HEADLINE_WIDTH - 1].rstrip() + "…"
+    console.out(f'neighbors of #{memory_id} — "{headline}"')
+
+    scale = f"{results.baseline:.3f} ± {results.deviation:.3f}"
+    console.out(
+        f"{results.corpus:,} other memories · #{memory_id}'s corpus baseline {scale}"
+    )
+    _print_hits(results)
 
 
 @cortex.command()

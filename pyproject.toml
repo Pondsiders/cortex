@@ -1,6 +1,6 @@
 [project]
 name = "cortex"
-version = "2.1.0"
+version = "2.2.0"
 description = "Alpha's memory: Markdown files in the Vault, with a disposable index over them."
 readme = "README.md"
 requires-python = ">=3.12"
