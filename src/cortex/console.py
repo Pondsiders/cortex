@@ -16,6 +16,11 @@ Every write is flushed as it is made. Buffering a stream that later breaks leave
 interpreter to find out during shutdown, which it reports as an ignored exception — a
 frightening message about output nobody was reading.
 
+Flushing alone does not finish the job: the write that failed is still sitting in the
+stream's buffer, and the interpreter tries it once more on the way out. So a stream
+whose reader left has its file descriptor pointed at the null device, which is the
+remedy the Python documentation gives for SIGPIPE. The leftover bytes go nowhere.
+
 This is the near half of the guarantee. It cannot help with a kill, so the far half is
 that the index is a cache: whatever drifts, a reindex settles.
 
@@ -28,6 +33,7 @@ lets it ask whether anyone is still there.
 
 from __future__ import annotations
 
+import os
 import sys
 from typing import TextIO, final
 
@@ -41,10 +47,28 @@ def _put(stream: TextIO, text: str) -> None:
     try:
         _ = stream.write(text)
         stream.flush()
-    # ValueError is a stream closed out from under us; BrokenPipeError is a reader that
-    # walked away. Neither is the command's problem.
-    except (BrokenPipeError, ValueError):
+    # BrokenPipeError is a reader that walked away; ValueError is a stream closed out
+    # from under us. Neither is the command's problem.
+    except BrokenPipeError:
         _muted.add(id(stream))
+        _discard(stream)
+    except ValueError:
+        _muted.add(id(stream))
+
+
+def _discard(stream: TextIO) -> None:
+    """Send whatever a broken stream still holds to the null device."""
+    # A stand-in stream, such as a test's, has no descriptor to redirect, and there is
+    # nothing at shutdown to complain about it either.
+    try:
+        descriptor = stream.fileno()
+    except (OSError, ValueError):
+        return
+    devnull = os.open(os.devnull, os.O_WRONLY)
+    try:
+        _ = os.dup2(devnull, descriptor)
+    finally:
+        os.close(devnull)
 
 
 def out(message: str = "") -> None:
