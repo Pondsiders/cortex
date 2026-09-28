@@ -80,8 +80,9 @@ class Settings(BaseSettings):
     embedding_model: str
     embedding_endpoint: str
     embedding_api_key: str
+    index_dir: Path | None = None
 
-    @field_validator("cortex_root", mode="before")
+    @field_validator("cortex_root", "index_dir", mode="before")
     @classmethod
     def _expand(cls, value: object) -> object:
         """Expand ``$VAR``, ``${VAR}`` and ``~`` before the path is validated."""
@@ -96,5 +97,9 @@ class Settings(BaseSettings):
 
     @property
     def index_root(self) -> Path:
-        """Return the directory holding the index files."""
-        return data_home() / "cortex"
+        """Return the directory holding the index files.
+
+        ``INDEX_DIR`` puts the index somewhere other machines can read it; unset, it
+        lives in the XDG data directory.
+        """
+        return self.index_dir or data_home() / "cortex"

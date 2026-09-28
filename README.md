@@ -32,6 +32,8 @@ EMBEDDING_ENDPOINT="https://localhost:8080/v1"
 EMBEDDING_API_KEY="<key>"
 ```
 
+`INDEX_DIR` is optional. The index (`vectors.npy`, `index.jsonl`, `manifest.json`) lives in `$XDG_DATA_HOME/cortex` unless it says otherwise. Point it at shared storage when another machine needs to read the index; only one machine should write it. Writes are atomic renames, so a reader sees either the old index or the new one.
+
 ## Recollection hook
 
 Recollection is implemented as a Claude Code UserPromptSubmit hook. Put the following in a Claude Code `settings.json`.
