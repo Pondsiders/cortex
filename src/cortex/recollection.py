@@ -23,6 +23,11 @@ When the models are unreachable the cued path is abandoned and the stray goes ou
 
 from __future__ import annotations
 
+import re
+import shutil
+import subprocess
+import sys
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -33,9 +38,11 @@ import numpy as np
 
 from cortex import clock, log, seen
 from cortex import index as index_module
-from cortex.chat import Decomposer
+from cortex.chat import DISTINCTIVE_PROMPT, Decomposer
 from cortex.config import Settings
 from cortex.embeddings import Embedder
+
+_MEMORY_FILE = re.compile(r"^(\d+)\.md$")
 
 BUDGET = 9990
 """Characters of everything the hook returns, header included. Claude Code caps a hook
@@ -79,11 +86,15 @@ class Recollected:
     ``sigma`` grades the memory against the chat model's query, this grades it against
     what Jeffery actually said, so a high ``sigma`` with a low topicality is a query
     that wandered off. Random memories get one too."""
+    matches: int | None = None
+    """For a keyword hit, how many memories contained the phrase. None otherwise."""
 
     def block(self) -> str:
         """Render the memory as a ``## Memory #...`` block."""
         # ruff reads the sigma as a confusable 'o'; it's display text, not a name.
-        if self.query is None or self.score is None:
+        if self.matches is not None:
+            provenance = [f"- grep: {self.query!r} ({self.matches} matching)"]
+        elif self.query is None or self.score is None:
             provenance = ["- random memory"]
         else:
             scale = "" if self.sigma is None else f" ({self.sigma:+.1f}σ)"  # noqa: RUF001
@@ -121,6 +132,8 @@ class Recollection:
     degraded: bool
     dropped: list[int]
     skipped: str | None
+    phrases: list[str]
+    """What the keyword channel was asked to grep for, hit or miss."""
     """Why the message wasn't decomposed, when it wasn't."""
 
     def context(self) -> str:
@@ -243,6 +256,7 @@ def recollect(
     eligible = mask.filter(ids)
 
     queries: list[str] = []
+    phrases: list[str] = []
     degraded = False
     found: list[Recollected] = []
     topic: np.ndarray | None = None
@@ -250,7 +264,9 @@ def recollect(
     skipped = _unspoken(prompt)
     if skipped is None:
         try:
-            queries, found, topic = _cued(settings, prompt, loaded, eligible, deadline)
+            queries, phrases, found, topic = _cued(
+                settings, prompt, loaded, eligible, deadline
+            )
         # Any failure of the cued path degrades to the Lagniappe, which needs no
         # network of its own.
         except Exception as error:
@@ -273,6 +289,7 @@ def recollect(
         degraded=degraded,
         dropped=[memory.id for memory in found[len(shown) :]],
         skipped=skipped,
+        phrases=phrases,
     )
 
 
@@ -309,17 +326,23 @@ def _cued(
     loaded: index_module.Index,
     eligible: np.ndarray,
     deadline: float,
-) -> tuple[list[str], list[Recollected], np.ndarray | None]:
+) -> tuple[list[str], list[str], list[Recollected], np.ndarray | None]:
     """Run the cued path: decompose, embed, and take the best row per query.
 
     The whole message is embedded alongside the queries, in the same request, as the
     topic vector. It retrieves nothing; it only measures every memory's topicality.
 
     Returns:
-        The queries, the memories they found, and every row's topicality in standard
+        The queries, the keyword channel's phrases, the memories they found, and
+        every row's topicality in standard
         deviations (None if the topic vector has no spread to measure against).
     """
-    queries = Decomposer(settings, timeout=deadline / 2).decompose(prompt)
+    decomposer = Decomposer(settings, timeout=deadline / 2)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        asked = pool.submit(decomposer.decompose, prompt)
+        spotted = pool.submit(_distinctive, decomposer, prompt)
+        queries = asked.result()
+        phrases = spotted.result()
 
     embedder = Embedder(settings, timeout=deadline / 2, max_retries=0)
     vectors = index_module.normalize(
@@ -334,13 +357,14 @@ def _cued(
     baseline = scores.mean(axis=1)
     deviation = scores.std(axis=1)
     topic = (scores[-1] - baseline[-1]) / deviation[-1] if deviation[-1] else None
+    closeness = scores[-1]
     scores = scores[:-1]
-    if not queries:
-        return [], [], topic
+    if not queries and not phrases:
+        return [], [], [], topic
     scores[:, ~eligible] = -np.inf
 
     found: list[Recollected] = []
-    assigned = _assign(scores, queries)
+    assigned = _assign(scores, queries) if queries else {}
     for q in range(len(queries)):
         if q not in assigned:
             continue
@@ -364,7 +388,101 @@ def _cued(
                 topicality=None if topic is None else float(topic[row]),
             )
         )
-    return queries, found, topic
+
+    # Keyword hits go in right after the first cued memory: when grep lands it has
+    # matched exact bytes, which makes it more like the best query than the long tail.
+    claimed = {row for row, _ in assigned.values()}
+    keyword = _keyword(settings, loaded, eligible, claimed, phrases, closeness, topic)
+    found[1:1] = keyword
+    return queries, phrases, found, topic
+
+
+def _distinctive(decomposer: Decomposer, prompt: str) -> list[str]:
+    """Ask for the message's distinctive words, or nothing if the call fails.
+
+    The keyword channel is an experiment riding beside the cued path, so its failure
+    must not take the cued path down with it.
+    """
+    try:
+        return decomposer.decompose(prompt, system_prompt=DISTINCTIVE_PROMPT)
+    except Exception:
+        return []
+
+
+def _grep(memories_root: Path, phrase: str) -> list[int]:
+    """Return the ids of every memory file containing ``phrase``, ignoring case.
+
+    Fixed-string, not regex, so a phrase with a parenthesis in it means what it says.
+    Only ``<id>.md`` files count; anything else in the tree is skipped.
+    """
+    rg = shutil.which("rg")
+    if rg is None:
+        # Said out loud: an empty list from here reads exactly like "no memory has
+        # this phrase," and on Sep 30 that silence cost a whole first test run.
+        print(
+            "cortex: ripgrep (rg) is not installed; keyword channel is off",
+            file=sys.stderr,
+        )
+        return []
+    done = subprocess.run(  # noqa: S603
+        [rg, "-l", "-i", "-F", "--glob", "*.md", "-e", phrase, str(memories_root)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    ids: list[int] = []
+    for line in done.stdout.splitlines():
+        match = _MEMORY_FILE.match(Path(line).name)
+        if match is not None:
+            ids.append(int(match.group(1)))
+    return ids
+
+
+def _keyword(
+    settings: Settings,
+    loaded: index_module.Index,
+    eligible: np.ndarray,
+    claimed: set[int],
+    phrases: list[str],
+    closeness: np.ndarray,
+    topic: np.ndarray | None,
+) -> list[Recollected]:
+    """Grep for each distinctive phrase and keep its most topical unseen hit.
+
+    Grep answers with a set, not a ranking, so the whole message ranks it: of the
+    memories containing the phrase, the one closest to what Jeffery actually said wins.
+    A memory grep finds that the index doesn't hold, a forgotten one, drops out here.
+    """
+    rows_by_id = loaded.rows()
+    taken = set(claimed)
+    kept: list[Recollected] = []
+    for phrase in phrases:
+        hits = [
+            rows_by_id[i]
+            for i in _grep(settings.memories_root, phrase)
+            if i in rows_by_id
+        ]
+        candidates = [row for row in hits if eligible[row] and row not in taken]
+        if not candidates:
+            continue
+        row = max(candidates, key=lambda r: float(closeness[r]))
+        entry = loaded.entries[row]
+        body = _read(settings, entry)
+        if body is None:
+            continue
+        taken.add(row)
+        kept.append(
+            Recollected(
+                id=entry.id,
+                created=entry.created,
+                body=body,
+                query=phrase,
+                score=None,
+                topicality=None if topic is None else float(topic[row]),
+                matches=len(hits),
+            )
+        )
+    return kept
 
 
 def _lagniappe(

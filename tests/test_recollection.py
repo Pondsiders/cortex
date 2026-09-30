@@ -84,7 +84,7 @@ def test_memories_cut_for_space_stay_eligible(
             )
             for entry in loaded.entries[:3]
         ]
-        return ["q1", "q2", "q3"], found, None
+        return ["q1", "q2", "q3"], [], found, None
 
     monkeypatch.setattr(recollection, "_cued", cued)
     result = recollection.recollect(settings, prompt="hello", session_id=SESSION)

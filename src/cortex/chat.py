@@ -57,6 +57,26 @@ Remember that Jeffery is not speaking to you. Jeffery is speaking to Alpha. Cons
 your queries with that in mind.
 """
 
+DISTINCTIVE_PROMPT = """\
+Identify the distinctive words and phrases in the following user message: the ones a \
+plain-text search would find and a search by meaning would miss.
+
+Distinctive means proper names, coined or made-up words, deliberate misspellings and \
+malapropisms, titles, identifiers such as file names or issue numbers, and exact \
+phrases that are quoted or clearly memorable. Ordinary words are not distinctive, even \
+important ones. The names Jeffery and Alpha appear everywhere and are never distinctive.
+
+Copy each one exactly as it appears in the message, letter for letter, including any \
+misspelling. Do not correct, translate, or explain them.
+
+Most messages have nothing distinctive. For those, return an empty array.
+
+Return a JSON array of strings.
+"""
+"""The keyword channel's question (#6). It runs beside the decomposer rather than
+instead of it: the decomposer paraphrases, which is right for cosine and fatal for
+grep, so the raw spelling has to be lifted out of the message by a separate call."""
+
 _RESPONSE_FORMAT: dict[str, Any] = {
     "type": "json_schema",
     "json_schema": {

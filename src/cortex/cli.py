@@ -296,8 +296,29 @@ def hook_recollection() -> None:
             for m in result.memories
             if m.query is not None and m.score is not None
         ],
+        keywords=[
+            {
+                "phrase": p,
+                "id": m.id if m else None,
+                "matches": m.matches if m else 0,
+                "topicality": _round(m.topicality) if m else None,
+            }
+            for p in result.phrases
+            for m in [
+                next(
+                    (
+                        x
+                        for x in result.memories
+                        if x.matches is not None and x.query == p
+                    ),
+                    None,
+                )
+            ]
+        ],
         unanswered=[
-            q for q in result.queries if q not in {m.query for m in result.memories}
+            q
+            for q in result.queries
+            if q not in {m.query for m in result.memories if m.matches is None}
         ],
         lagniappe=next((m.id for m in result.memories if m.query is None), None),
         lagniappe_topicality=next(
