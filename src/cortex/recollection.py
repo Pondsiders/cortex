@@ -44,6 +44,14 @@ from cortex.embeddings import Embedder
 
 _MEMORY_FILE = re.compile(r"^(\d+)\.md$")
 
+# Curly quotes are the point here, not a typo for a backtick.
+_EDGE_PUNCTUATION = " \t\n.,;:!?\"'“”‘’()[]{}…*_`"  # noqa: RUF001
+"""Stripped from both ends of a phrase before grepping. "Gelada, gelada!" found
+nothing."""
+
+MAX_MATCHES = 50
+"""A phrase in more memories than this is skipped. "4:00" matched 186."""
+
 BUDGET = 9990
 """Characters of everything the hook returns, header included. Claude Code caps a hook
 at 10,000 and does not truncate past it: the whole thing is written to a file and
@@ -438,6 +446,20 @@ def _grep(memories_root: Path, phrase: str) -> list[int]:
     return ids
 
 
+def _hits(settings: Settings, rows_by_id: dict[int, int], phrase: str) -> list[int]:
+    """Return the index rows of memories containing a phrase, or failing that its words.
+
+    A phrase lifted with its surroundings, like "Gelada, gelada", can match nothing
+    while its one real word matches exactly what was meant. So a multi-word phrase
+    that finds nothing falls back to its words, and the words' hits are pooled.
+    """
+    ids = _grep(settings.memories_root, phrase)
+    words = {w.strip(_EDGE_PUNCTUATION).lower() for w in phrase.split()} - {""}
+    if not ids and len(phrase.split()) > 1:
+        ids = list({i for word in words for i in _grep(settings.memories_root, word)})
+    return [rows_by_id[i] for i in ids if i in rows_by_id]
+
+
 def _keyword(
     settings: Settings,
     loaded: index_module.Index,
@@ -456,16 +478,20 @@ def _keyword(
     rows_by_id = loaded.rows()
     taken = set(claimed)
     kept: list[Recollected] = []
-    for phrase in phrases:
-        hits = [
-            rows_by_id[i]
-            for i in _grep(settings.memories_root, phrase)
-            if i in rows_by_id
-        ]
-        candidates = [row for row in hits if eligible[row] and row not in taken]
-        if not candidates:
+    for raw in phrases:
+        phrase = raw.strip(_EDGE_PUNCTUATION)
+        if not phrase:
             continue
-        row = max(candidates, key=lambda r: float(closeness[r]))
+        hits = _hits(settings, rows_by_id, phrase)
+        # A phrase in this many memories isn't distinctive here, whatever it looks like.
+        if not hits or len(hits) > MAX_MATCHES:
+            continue
+        # The best hit or nothing. If it's already in front of Alpha, grep has only
+        # confirmed the cued path, and the runner-up is a worse memory by construction:
+        # "Martha" fell through to Martha Bullock when the right one was already shown.
+        row = max(hits, key=lambda r: float(closeness[r]))
+        if not eligible[row] or row in taken:
+            continue
         entry = loaded.entries[row]
         body = _read(settings, entry)
         if body is None:
@@ -476,7 +502,7 @@ def _keyword(
                 id=entry.id,
                 created=entry.created,
                 body=body,
-                query=phrase,
+                query=raw,
                 score=None,
                 topicality=None if topic is None else float(topic[row]),
                 matches=len(hits),
