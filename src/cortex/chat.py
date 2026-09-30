@@ -64,7 +64,9 @@ plain-text search would find and a search by meaning would miss.
 Distinctive means proper names, coined or made-up words, deliberate misspellings and \
 malapropisms, titles, identifiers such as file names or issue numbers, and exact \
 phrases that are quoted or clearly memorable. Ordinary words are not distinctive, even \
-important ones. The names Jeffery and Alpha appear everywhere and are never distinctive.
+important ones. Interjections and exclamations such as "wtf", "OMFG" or "BAM" are \
+noises, not topics, and are never distinctive. The names Jeffery and Alpha appear \
+everywhere and are never distinctive.
 
 Copy each one exactly as it appears in the message, letter for letter, including any \
 misspelling. Do not correct, translate, or explain them.

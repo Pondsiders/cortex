@@ -436,6 +436,7 @@ def _grep(memories_root: Path, phrase: str) -> list[int]:
     """Return the ids of every memory file containing ``phrase``, ignoring case.
 
     Fixed-string, not regex, so a phrase with a parenthesis in it means what it says.
+    Whole words only: as a bare substring "rubic" matched "rubicon".
     Only ``<id>.md`` files count; anything else in the tree is skipped.
     """
     rg = shutil.which("rg")
@@ -448,7 +449,18 @@ def _grep(memories_root: Path, phrase: str) -> list[int]:
         )
         return []
     done = subprocess.run(  # noqa: S603
-        [rg, "-l", "-i", "-F", "--glob", "*.md", "-e", phrase, str(memories_root)],
+        [
+            rg,
+            "-l",
+            "-i",
+            "-F",
+            "-w",
+            "--glob",
+            "*.md",
+            "-e",
+            phrase,
+            str(memories_root),
+        ],
         capture_output=True,
         text=True,
         check=False,
