@@ -84,7 +84,6 @@ Options:
 
 Commands:
   hook     Claude Code hook scripts.
-  monitor  Watch for stretches of quiet, and hush the watching while it...
   reindex  Bring the index back in sync with the Markdown files on disk.
   search   Search the memories, reading the query from standard input.
   similar  Show the memories nearest to memory ID.

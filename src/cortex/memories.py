@@ -108,13 +108,11 @@ def read(path: Path, root: Path) -> Memory:
 def latest(memories_root: Path) -> Path | None:
     """Return the path of the highest-numbered memory on disk.
 
-    Filenames only: nothing is opened and nothing is parsed. That is what makes this
-    cheap enough to call on a timer, where :func:`discover` — which reads and parses
-    every memory there is — would not be.
+    Filenames only: nothing is opened and nothing is parsed, unlike :func:`discover`,
+    which reads every memory there is. ``store`` uses it to pick the next id.
 
     The whole tree is scanned rather than today's day folder, so that nothing has to
-    know about the 6 AM seam and nothing can be left watching a folder the day has
-    moved on from.
+    know about the 6 AM seam.
 
     Args:
         memories_root: The ``memories`` directory.
