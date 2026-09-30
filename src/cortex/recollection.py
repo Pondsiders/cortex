@@ -86,36 +86,54 @@ class Recollected:
 @final
 @dataclass(frozen=True)
 class Recollection:
-    """Everything one firing of the hook produced."""
+    """Everything one firing of the hook produced.
+
+    ``memories`` is what Alpha is actually shown. Anything that was found but did not
+    fit the budget is in ``dropped`` instead, and is still eligible later in the
+    session.
+    """
 
     memories: list[Recollected]
     queries: list[str]
     degraded: bool
+    dropped: list[int]
 
     def context(self) -> str:
-        """Assemble the blocks that fit the budget, most significant first.
+        """Render the memories as one block of context, header first.
 
-        The list arrives in query order with the Lagniappe last, so overrunning drops
-        the stray before it drops anything the message actually asked for. A single
-        memory too large to fit at all is sliced rather than dropped, because returning
-        nothing is worse than returning the beginning of something.
-
-        The header is the first thing in the buffer rather than something added after
-        the accounting, so the returned string is never longer than the budget.
+        :func:`_fit` has already decided what goes in, so everything here fits except
+        possibly a lone memory too large for the budget by itself, which is sliced.
         """
         if not self.memories:
             return ""
-        parts = [HEADER]
-        used = len(HEADER)
-        for memory in self.memories:
-            block = memory.block()
-            if used + 2 + len(block) > BUDGET:
-                if len(parts) == 1:
-                    return f"{HEADER}\n\n{block}"[:BUDGET]
-                break
-            parts.append(block)
-            used += 2 + len(block)
-        return "\n\n".join(parts)
+        blocks = [memory.block() for memory in self.memories]
+        return "\n\n".join([HEADER, *blocks])[:BUDGET]
+
+
+def _fit(memories: list[Recollected]) -> list[Recollected]:
+    """Keep the leading memories whose blocks fit the budget together.
+
+    The list arrives in query order with the Lagniappe last, so overrunning drops the
+    stray before it drops anything the message actually asked for. A single memory too
+    large to fit at all is kept anyway and sliced when rendered, because returning
+    nothing is worse than returning the beginning of something.
+
+    This runs before anything is marked seen. When it ran afterwards, a memory cut for
+    space was marked and never shown, and the log said it had been delivered (#1).
+
+    The header is counted first, so the rendered string is never longer than the budget.
+    """
+    kept: list[Recollected] = []
+    used = len(HEADER)
+    for memory in memories:
+        size = 2 + len(memory.block())
+        if used + size > BUDGET:
+            if not kept:
+                kept.append(memory)
+            break
+        kept.append(memory)
+        used += size
+    return kept
 
 
 def _assign(scores: np.ndarray, queries: list[str]) -> dict[int, tuple[int, float]]:
@@ -221,9 +239,15 @@ def recollect(
     if stray is not None:
         found.append(stray)
 
-    mask.mark([memory.id for memory in found])
+    shown = _fit(found)
+    mask.mark([memory.id for memory in shown])
     mask.save()
-    return Recollection(memories=found, queries=queries, degraded=degraded)
+    return Recollection(
+        memories=shown,
+        queries=queries,
+        degraded=degraded,
+        dropped=[memory.id for memory in found[len(shown) :]],
+    )
 
 
 def _cued(

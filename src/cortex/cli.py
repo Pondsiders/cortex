@@ -358,6 +358,7 @@ def hook_recollection() -> None:
             q for q in result.queries if q not in {m.query for m in result.memories}
         ],
         lagniappe=next((m.id for m in result.memories if m.query is None), None),
+        dropped=result.dropped,
         chars=len(context),
     )
 
