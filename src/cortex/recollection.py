@@ -97,6 +97,8 @@ class Recollection:
     queries: list[str]
     degraded: bool
     dropped: list[int]
+    skipped: str | None
+    """Why the message wasn't decomposed, when it wasn't."""
 
     def context(self) -> str:
         """Render the memories as one block of context, header first.
@@ -221,9 +223,8 @@ def recollect(
     degraded = False
     found: list[Recollected] = []
 
-    # A slash command carries no semantic content worth decomposing, but it is still a
-    # turn, and the Lagniappe does not depend on what the message says.
-    if not prompt.startswith("/"):
+    skipped = _unspoken(prompt)
+    if skipped is None:
         try:
             queries, found = _cued(settings, prompt, loaded, eligible, deadline)
         # Any failure of the cued path degrades to the Lagniappe, which needs no
@@ -247,7 +248,35 @@ def recollect(
         queries=queries,
         degraded=degraded,
         dropped=[memory.id for memory in found[len(shown) :]],
+        skipped=skipped,
     )
+
+
+def _unspoken(prompt: str) -> str | None:
+    """Say why a prompt isn't worth decomposing, or None if it is.
+
+    Three kinds of prompt get the Lagniappe and nothing else, because none of them is
+    Jeffery saying something:
+
+    - A slash command, which carries no content of its own.
+    - Anything opening with ``[`` or ``<``. That's the memory bell, which opens
+      ``[cron`` by our own convention, and every message the harness writes into the
+      user's slot: ``<task-notification>``, ``<agent-message ...>`` and whatever it
+      invents next. The hook's input has no field saying who sent a prompt, so the
+      opening character is the only signal there is. Of 1,669 logged turns, 363
+      opened this way and three were Jeffery (``<bash-input>``). Blanket rather than a
+      list, so a new tag is quiet by default (#2).
+    - Nothing at all.
+
+    Returns:
+        The prompt's opening word, for the log, or None to decompose it.
+    """
+    stripped = prompt.lstrip()
+    if not stripped:
+        return "empty"
+    if stripped[0] in "/[<":
+        return stripped.split(maxsplit=1)[0][:40]
+    return None
 
 
 def _cued(

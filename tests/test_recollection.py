@@ -97,6 +97,35 @@ def test_memories_cut_for_space_stay_eligible(
     assert _eligible(4)
 
 
+@pytest.mark.parametrize(
+    ("prompt", "reason"),
+    [
+        ("[cron · not from Jeffery] Reflect on what's happened", "[cron"),
+        ("<task-notification>\n<task-id>b1</task-id>", "<task-notification>"),
+        ('<agent-message from="a56">\n[Subagent hand-back]', "<agent-message"),
+        ("  /alpha-start Morning, little duck.", "/alpha-start"),
+        ("   ", "empty"),
+    ],
+)
+def test_prompts_nobody_typed_get_the_stray_and_nothing_else(
+    tmp_path: Path, prompt: str, reason: str
+) -> None:
+    settings = _corpus(tmp_path, {1: "the stray"})
+    result = recollection.recollect(settings, prompt=prompt, session_id=SESSION)
+
+    assert result.skipped == reason
+    assert result.queries == []
+    assert not result.degraded  # nothing tried the network
+    assert [m.id for m in result.memories] == [1]
+
+
+@pytest.mark.parametrize(
+    "prompt", ["Morning, little duck.", "*thinks* Let's talk.", "Yes please."]
+)
+def test_what_jeffery_types_is_decomposed(prompt: str) -> None:
+    assert recollection._unspoken(prompt) is None  # pyright: ignore[reportPrivateUsage]
+
+
 def test_a_lone_oversized_memory_is_sliced_not_dropped(tmp_path: Path) -> None:
     settings = _corpus(tmp_path, {1: "y" * (recollection.BUDGET * 2)})
     result = recollection.recollect(settings, prompt="/start", session_id=SESSION)
