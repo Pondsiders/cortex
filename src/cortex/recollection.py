@@ -44,10 +44,6 @@ from cortex.embeddings import Embedder
 
 _MEMORY_FILE = re.compile(r"^(\d+)\.md$")
 
-# Curly quotes are the point here, not a typo for a backtick.
-_EDGE_PUNCTUATION = " \t\n.,;:!?\"'“”‘’()[]{}…*_`"  # noqa: RUF001
-"""Stripped from both ends of a phrase before grepping. "Gelada, gelada!" found
-nothing."""
 
 MAX_MATCHES = 50
 """A phrase in more memories than this is skipped. "4:00" matched 186."""
@@ -465,27 +461,6 @@ def _grep(memories_root: Path, phrase: str) -> list[int]:
     return ids
 
 
-def _hits(settings: Settings, rows_by_id: dict[int, int], phrase: str) -> list[int]:
-    """Return the index rows of memories containing a phrase, or failing that its words.
-
-    A phrase lifted with its surroundings, like "Gelada, gelada", can match nothing
-    while its one real word matches exactly what was meant. So a multi-word phrase
-    that finds nothing falls back to its words, and the words' hits are pooled.
-    """
-    ids = _grep(settings.memories_root, phrase)
-    if not ids and len(phrase.split()) > 1:
-        # Only words rare in their own right: "S. T. Joshi" pooled "S" and "T" and
-        # matched 21,447 memories.
-        words = {w.strip(_EDGE_PUNCTUATION).lower() for w in phrase.split()} - {""}
-        pooled: set[int] = set()
-        for word in words:
-            found = _grep(settings.memories_root, word)
-            if len(found) <= MAX_MATCHES:
-                pooled.update(found)
-        ids = list(pooled)
-    return [rows_by_id[i] for i in ids if i in rows_by_id]
-
-
 def _keyword(
     settings: Settings,
     loaded: index_module.Index,
@@ -529,10 +504,15 @@ def _keyword(
     taken = set(claimed)
     kept: list[Recollected] = []
     for raw in phrases:
-        phrase = raw.strip(_EDGE_PUNCTUATION)
+        # Exact bytes, edges included: "./venv" isn't "venv".
+        phrase = raw.strip()
         if not phrase:
             continue
-        hits = _hits(settings, rows_by_id, phrase)
+        hits = [
+            rows_by_id[i]
+            for i in _grep(settings.memories_root, phrase)
+            if i in rows_by_id
+        ]
         if visible is not None:
             hits = [row for row in hits if visible[row]]
         if not hits:
