@@ -23,8 +23,10 @@ Please decompose the following user message into query strings suitable for sema
 search.
 
 Return one representative query string per distinct topic of the message; do not \
-return multiple queries for the same topic. Return at most one query string per \
-sentence of the user message.
+return multiple queries for the same topic. A single sentence can hold several topics.
+
+If the message has no topic of its own, for example an acknowledgement like "yes \
+please" or "go ahead", return an empty array.
 
 Write in clauses; do not keyword-stuff. Richer query strings are better.
 
