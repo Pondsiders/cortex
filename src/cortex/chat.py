@@ -7,6 +7,19 @@ Nothing here retries. A recollection has a hard deadline it shares with the embe
 call and the harness's own timeout, and a retry inside that budget buys one more chance
 at the cost of the whole turn's enrichment. Failing immediately lets the caller fall
 back to the Lagniappe, which needs no network at all.
+
+The same message decomposes differently every time, and that is the point. Sampling is
+left at the server's defaults, and each query takes the single best of twenty thousand
+memories, where the top few are often nearly tied, so a small change in wording lands on
+a different memory. Run twice over a hundred real messages, the same prompt produced the
+same queries once and retrieved different memories ninety-one times (Sep 30 2026, #13).
+Pinned, recall would rut: the first memory to win a topic would win it forever and its
+neighbors would go dark, which is the rich-get-richer failure the Lagniappe exists to
+fight. Loose, it keeps wandering the neighborhood of the right answer. Do not set the
+temperature to zero to make a test pass; give the test a noise floor instead.
+
+On those stepping into rivers staying the same, other and other waters flow.
+— Heraclitus, fragment B12
 """
 
 from __future__ import annotations
@@ -85,7 +98,8 @@ class Decomposer:
         Returns:
             The query strings, which may be empty. Sampling is deliberately not sent, so
             each model contributes its own server-side defaults and a comparison between
-            two of them stays honest.
+            two of them stays honest. See the module docstring for why that variety is
+            wanted rather than tolerated.
         """
         response = self._client.chat.completions.create(
             model=self._model,
