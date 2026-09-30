@@ -18,6 +18,18 @@ scores = vectors @ np.asarray(loaded.vectors).T
 
 For each query string, the memory with the highest score is selected for inclusion with the user prompt. Memories are deduplicated against a session-scoped seen cache; a memory returned by Recollection is not returned again in the same session.
 
+One more memory rides along at random, the Lagniappe, drawn uniformly from everything not yet shown.
+
+Each recalled memory carries two numbers, both in standard deviations above a baseline, because raw cosines in this space all crowd between about 0.35 and 0.7 and can't be read on their own:
+
+```
+- query: "Inquiry about Sparkle's recent incident with the bread basket"
+- score: 0.70 (+6.5σ)
+- topicality: +6.5σ
+```
+
+The first is the score against the chat model's query. The second, **topicality**, is the score against the whole message, embedded as-is alongside the queries. Zero means a memory drawn from a hat; negative means it's about something else. When the two disagree (a strong query score with low topicality), the chat model's query wandered away from what was said. The Lagniappe gets a topicality too, so a random memory that happens to fit can be recognized as luck, and one that doesn't can be enjoyed as weather. Neither number is ever used as a threshold.
+
 ## Configuration
 
 The configuration file goes in `~/.config/cortex/config.env`. Values shown below are examples; this is the configuration we use at home.

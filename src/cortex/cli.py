@@ -355,6 +355,7 @@ def hook_recollection() -> None:
                 "id": m.id,
                 "score": round(m.score, 4),
                 "sigma": None if m.sigma is None else round(m.sigma, 2),
+                "topicality": _round(m.topicality),
             }
             for m in result.memories
             if m.query is not None and m.score is not None
@@ -363,6 +364,9 @@ def hook_recollection() -> None:
             q for q in result.queries if q not in {m.query for m in result.memories}
         ],
         lagniappe=next((m.id for m in result.memories if m.query is None), None),
+        lagniappe_topicality=next(
+            (_round(m.topicality) for m in result.memories if m.query is None), None
+        ),
         dropped=result.dropped,
         skipped=result.skipped,
         chars=len(context),
@@ -421,6 +425,11 @@ def hook_timestamp() -> None:
             }
         )
     )
+
+
+def _round(value: float | None) -> float | None:
+    """Round a sigma for the log, passing None through."""
+    return None if value is None else round(value, 2)
 
 
 def _bail(message: str) -> int:

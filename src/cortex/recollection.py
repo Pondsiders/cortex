@@ -47,6 +47,11 @@ HEADER = "cortex recollection hook output:"
 """Names the hook that produced the block. Alpha receives several anonymous context
 blocks a turn and cannot otherwise tell them apart — or tell them from Jeffery."""
 
+TOPIC_CHARS = 12_000
+"""How much of the message goes into the topic vector. The embedding endpoint shares an
+8,192-token context across its slots, and a message long enough to overflow it would
+take the queries down with it; this is roughly four thousand tokens."""
+
 DEADLINE = 20.0
 """Seconds for the two network calls together. Claude Code allows the hook 30 and
 discards the output of one that overruns, so the budget stops short of it."""
@@ -67,18 +72,27 @@ class Recollected:
     standard deviations. A raw cosine can't be read without it: 0.45 is a strong hit
     for a query whose corpus mean is 0.15 and nothing at all for one whose mean is 0.40
     (#5). Shown for the reader to judge, never used as a threshold."""
+    topicality: float | None = None
+    """How related the memory is to the whole message, in standard deviations above
+    the message's own mean over the corpus. Zero is a memory drawn from a hat; high is
+    on topic; negative is about something else. It differs from ``sigma`` on purpose:
+    ``sigma`` grades the memory against the chat model's query, this grades it against
+    what Jeffery actually said, so a high ``sigma`` with a low topicality is a query
+    that wandered off. Random memories get one too."""
 
     def block(self) -> str:
         """Render the memory as a ``## Memory #...`` block."""
+        # ruff reads the sigma as a confusable 'o'; it's display text, not a name.
         if self.query is None or self.score is None:
             provenance = ["- random memory"]
         else:
-            # ruff reads the sigma as a confusable 'o'; it's display text, not a name.
             scale = "" if self.sigma is None else f" ({self.sigma:+.1f}σ)"  # noqa: RUF001
             provenance = [
                 f"- query: {self.query!r}",
                 f"- score: {self.score:.2f}{scale}",
             ]
+        if self.topicality is not None:
+            provenance.append(f"- topicality: {self.topicality:+.1f}σ")  # noqa: RUF001
         return "\n".join(
             [
                 f"## Memory #{self.id}",
@@ -231,11 +245,12 @@ def recollect(
     queries: list[str] = []
     degraded = False
     found: list[Recollected] = []
+    topic: np.ndarray | None = None
 
     skipped = _unspoken(prompt)
     if skipped is None:
         try:
-            queries, found = _cued(settings, prompt, loaded, eligible, deadline)
+            queries, found, topic = _cued(settings, prompt, loaded, eligible, deadline)
         # Any failure of the cued path degrades to the Lagniappe, which needs no
         # network of its own.
         except Exception as error:
@@ -245,7 +260,7 @@ def recollect(
     for memory in found:
         eligible[np.flatnonzero(ids == memory.id)] = False
 
-    stray = _lagniappe(settings, loaded, eligible)
+    stray = _lagniappe(settings, loaded, eligible, topic)
     if stray is not None:
         found.append(stray)
 
@@ -294,22 +309,34 @@ def _cued(
     loaded: index_module.Index,
     eligible: np.ndarray,
     deadline: float,
-) -> tuple[list[str], list[Recollected]]:
-    """Run the cued path: decompose, embed, and take the best row per query."""
+) -> tuple[list[str], list[Recollected], np.ndarray | None]:
+    """Run the cued path: decompose, embed, and take the best row per query.
+
+    The whole message is embedded alongside the queries, in the same request, as the
+    topic vector. It retrieves nothing; it only measures every memory's topicality.
+
+    Returns:
+        The queries, the memories they found, and every row's topicality in standard
+        deviations (None if the topic vector has no spread to measure against).
+    """
     queries = Decomposer(settings, timeout=deadline / 2).decompose(prompt)
-    if not queries:
-        return [], []
 
     embedder = Embedder(settings, timeout=deadline / 2, max_retries=0)
     vectors = index_module.normalize(
-        np.asarray(embedder.embed_queries(queries), dtype=np.float32)
+        np.asarray(
+            embedder.embed_queries([*queries, prompt[:TOPIC_CHARS]]), dtype=np.float32
+        )
     )
 
     scores = vectors @ np.asarray(loaded.vectors).T
-    # Each query's scale is taken over the whole corpus before anything is masked, the
+    # Each row's scale is taken over the whole corpus before anything is masked, the
     # same way `cortex search` computes it, so the two read alike.
     baseline = scores.mean(axis=1)
     deviation = scores.std(axis=1)
+    topic = (scores[-1] - baseline[-1]) / deviation[-1] if deviation[-1] else None
+    scores = scores[:-1]
+    if not queries:
+        return [], [], topic
     scores[:, ~eligible] = -np.inf
 
     found: list[Recollected] = []
@@ -334,27 +361,39 @@ def _cued(
                     if deviation[q]
                     else None
                 ),
+                topicality=None if topic is None else float(topic[row]),
             )
         )
-    return queries, found
+    return queries, found, topic
 
 
 def _lagniappe(
-    settings: Settings, loaded: index_module.Index, eligible: np.ndarray
+    settings: Settings,
+    loaded: index_module.Index,
+    eligible: np.ndarray,
+    topic: np.ndarray | None = None,
 ) -> Recollected | None:
     """Draw one eligible memory uniformly at random.
 
     Uniform on purpose. Weighting the draw — towards the old, the isolated, the
     high-scoring — would smuggle in a theory about which memories deserve resurfacing,
-    and nobody has one.
+    and nobody has one. Its topicality is measured after the draw and reported, never
+    used to choose: it's there so a stray that happens to fit can be called luck out
+    loud, and one that doesn't can be enjoyed as weather.
     """
     rows = np.flatnonzero(eligible)
     if not len(rows):
         return None
-    entry = loaded.entries[int(np.random.default_rng().choice(rows))]
+    row = int(np.random.default_rng().choice(rows))
+    entry = loaded.entries[row]
     body = _read(settings, entry)
     if body is None:
         return None
     return Recollected(
-        id=entry.id, created=entry.created, body=body, query=None, score=None
+        id=entry.id,
+        created=entry.created,
+        body=body,
+        query=None,
+        score=None,
+        topicality=None if topic is None else float(topic[row]),
     )

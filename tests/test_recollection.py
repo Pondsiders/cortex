@@ -73,7 +73,9 @@ def test_memories_cut_for_space_stay_eligible(
     fat = "x" * (recollection.BUDGET // 3)
     settings = _corpus(tmp_path, {1: fat, 2: fat, 3: fat, 4: "the stray"})
 
-    def cued(*_: object) -> tuple[list[str], list[recollection.Recollected]]:
+    def cued(
+        *_: object,
+    ) -> tuple[list[str], list[recollection.Recollected], np.ndarray | None]:
         loaded = index.Index.load(settings.index_root)
         assert loaded is not None
         found = [
@@ -82,7 +84,7 @@ def test_memories_cut_for_space_stay_eligible(
             )
             for entry in loaded.entries[:3]
         ]
-        return ["q1", "q2", "q3"], found
+        return ["q1", "q2", "q3"], found, None
 
     monkeypatch.setattr(recollection, "_cued", cued)
     result = recollection.recollect(settings, prompt="hello", session_id=SESSION)
@@ -129,14 +131,18 @@ def test_what_jeffery_types_is_decomposed(prompt: str) -> None:
 def test_a_cued_memory_shows_its_scale() -> None:
     when = pendulum.datetime(2026, 9, 30, 9, tz="America/Los_Angeles")
     cued = recollection.Recollected(
-        id=7, created=when, body="b", query="q", score=0.45, sigma=5.14
+        id=7, created=when, body="b", query="q", score=0.45, sigma=5.14, topicality=0.8
     )
     stray = recollection.Recollected(
-        id=8, created=when, body="b", query=None, score=None
+        id=8, created=when, body="b", query=None, score=None, topicality=-0.34
+    )
+    bell = recollection.Recollected(
+        id=9, created=when, body="b", query=None, score=None
     )
     assert "- score: 0.45 (+5.1σ)" in cued.block()  # noqa: RUF001
-    assert "- random memory" in stray.block()
-    assert "σ" not in stray.block()  # noqa: RUF001
+    assert "- topicality: +0.8σ" in cued.block()  # noqa: RUF001
+    assert "- random memory\n- topicality: -0.3σ" in stray.block()  # noqa: RUF001
+    assert "σ" not in bell.block()  # noqa: RUF001
 
 
 def test_a_lone_oversized_memory_is_sliced_not_dropped(tmp_path: Path) -> None:
