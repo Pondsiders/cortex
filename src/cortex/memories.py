@@ -137,8 +137,78 @@ def latest(memories_root: Path) -> Path | None:
     return None if best is None else best[1]
 
 
+@dataclass(frozen=True)
+class Stat:
+    """A memory file as the directory sees it: where it is, and whether it has moved."""
+
+    id: int
+    path: str
+    mtime_ns: int
+    size: int
+
+
+def scan(memories_root: Path, root: Path) -> list[Stat]:
+    """List every memory file with its size and modification time, ordered by id.
+
+    Nothing is opened. This is what lets a sync skip the files that haven't changed:
+    reading and parsing all of them cost 1.6 of the 2 seconds a store took at 21,000
+    memories (#7), and a directory walk costs a few hundredths.
+
+    Args:
+        memories_root: The ``memories`` directory.
+        root: The ``CORTEX_ROOT``, used to compute the stored relative path.
+
+    Returns:
+        One entry per memory file.
+
+    Raises:
+        MemoryError_: If a day folder or file name is malformed, or an id repeats.
+    """
+    if not memories_root.is_dir():
+        msg = f"no memories directory at {memories_root}"
+        raise MemoryError_(msg)
+
+    # Relative paths are built as strings: pathlib per file was a third of the scan.
+    prefix = memories_root.relative_to(root).as_posix()
+    found: list[Stat] = []
+    for day in sorted(memories_root.iterdir()):
+        if day.name.startswith("."):
+            continue
+        if not day.is_dir():
+            msg = f"{day}: unexpected file in the memories tree"
+            raise MemoryError_(msg)
+        if _DAY_NAME.match(day.name) is None:
+            msg = f"{day}: day folder is not YYYY-MM-DD"
+            raise MemoryError_(msg)
+        for entry in os.scandir(day):
+            if entry.is_dir() or entry.name.startswith("."):
+                continue
+            match = _MEMORY_NAME.match(entry.name)
+            if match is None:
+                msg = f"{entry.path}: filename is not <id>.md"
+                raise MemoryError_(msg)
+            stat = entry.stat()
+            found.append(
+                Stat(
+                    id=int(match.group(1)),
+                    path=f"{prefix}/{day.name}/{entry.name}",
+                    mtime_ns=stat.st_mtime_ns,
+                    size=stat.st_size,
+                )
+            )
+
+    seen: dict[int, str] = {}
+    for item in found:
+        if item.id in seen:
+            msg = f"duplicate memory id {item.id}: {seen[item.id]} and {item.path}"
+            raise MemoryError_(msg)
+        seen[item.id] = item.path
+
+    return sorted(found, key=lambda item: item.id)
+
+
 def discover(memories_root: Path, root: Path) -> Iterator[Memory]:
-    """Walk the memories tree and yield every memory, ordered by id.
+    """Walk the memories tree and yield every memory, read and parsed, ordered by id.
 
     Args:
         memories_root: The ``memories`` directory.
@@ -150,32 +220,5 @@ def discover(memories_root: Path, root: Path) -> Iterator[Memory]:
     Raises:
         MemoryError_: If a day folder or memory file is malformed.
     """
-    if not memories_root.is_dir():
-        msg = f"no memories directory at {memories_root}"
-        raise MemoryError_(msg)
-
-    found: list[Memory] = []
-    for day in sorted(memories_root.iterdir()):
-        if day.name.startswith("."):
-            continue
-        if not day.is_dir():
-            msg = f"{day}: unexpected file in the memories tree"
-            raise MemoryError_(msg)
-        if _DAY_NAME.match(day.name) is None:
-            msg = f"{day}: day folder is not YYYY-MM-DD"
-            raise MemoryError_(msg)
-        for entry in sorted(day.iterdir()):
-            if entry.is_dir() or entry.name.startswith("."):
-                continue
-            found.append(read(entry, root))
-
-    seen: dict[int, str] = {}
-    for memory in found:
-        if memory.id in seen:
-            msg = (
-                f"duplicate memory id {memory.id}: {seen[memory.id]} and {memory.path}"
-            )
-            raise MemoryError_(msg)
-        seen[memory.id] = memory.path
-
-    yield from sorted(found, key=lambda m: m.id)
+    for item in scan(memories_root, root):
+        yield read(root / item.path, root)

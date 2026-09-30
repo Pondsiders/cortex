@@ -6,7 +6,9 @@ Three files in one directory, all derived from Markdown and all disposable:
     An ``(N, dimensions)`` float32 array. Row *i* belongs to entry *i*. Read back
     memory-mapped, so a search hands the bytes straight to BLAS without a copy.
 ``index.jsonl``
-    One JSON object per row: id, path, created, content hash. Greppable.
+    One JSON object per row: id, path, created, content hash, and the file's size and
+    modification time when it was read, which is how a sync knows it needn't read it
+    again. Greppable.
 ``manifest.json``
     The one fact the other two cannot state about themselves — which embedding
     model produced the numbers — plus the row count, which is what makes a
@@ -75,6 +77,10 @@ class Entry:
     path: str
     created: datetime
     content_hash: str
+    mtime_ns: int | None = None
+    size: int | None = None
+    """The file's modification time and size when it was last read. None in an index
+    written before these were recorded, so the next sync reads everything once."""
 
 
 def _entry_from_json(data: dict[str, object]) -> Entry:
@@ -87,7 +93,13 @@ def _entry_from_json(data: dict[str, object]) -> Entry:
         path=str(data["path"]),
         created=created,
         content_hash=str(data["content_hash"]),
+        mtime_ns=_optional_int(data.get("mtime_ns")),
+        size=_optional_int(data.get("size")),
     )
+
+
+def _optional_int(value: object) -> int | None:
+    return None if value is None else int(str(value))
 
 
 @final
@@ -194,6 +206,8 @@ def write(
                         "path": entry.path,
                         "created": entry.created.isoformat(),
                         "content_hash": entry.content_hash,
+                        "mtime_ns": entry.mtime_ns,
+                        "size": entry.size,
                     },
                     ensure_ascii=False,
                 )

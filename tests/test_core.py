@@ -9,13 +9,14 @@ vectors it should have kept. None of them touches the network.
 from __future__ import annotations
 
 import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 
 import numpy as np
 import pendulum
 import pytest
 
-from cortex import clock, index, memories, recollection, seen, sync
+from cortex import clock, embeddings, index, memories, recollection, seen, sync
 from cortex.config import Settings
 
 LA = "America/Los_Angeles"
@@ -103,3 +104,74 @@ def test_sync_keeps_unchanged_vectors_and_drops_forgotten_memories(
     assert rebuilt is not None
     assert [e.id for e in rebuilt.entries] == [1, 3]
     assert np.array_equal(np.asarray(rebuilt.vectors), vectors[[0, 2]])
+
+
+def test_sync_reads_only_the_files_that_changed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    folder = tmp_path / "memories" / "2026-09-30"
+    folder.mkdir(parents=True)
+    created = pendulum.datetime(2026, 9, 30, 9, tz=LA).isoformat()
+    for ident in (1, 2, 3):
+        _ = (folder / f"{ident}.md").write_text(
+            f"---\ncreated: {created}\n---\n\nmemory {ident}\n", encoding="utf-8"
+        )
+    settings = Settings(
+        cortex_root=tmp_path,
+        index_dir=tmp_path / "index",
+        chat_model="unused",
+        chat_endpoint="unused",
+        chat_api_key="unused",
+        embedding_model="unused",
+        embedding_endpoint="unused",
+        embedding_api_key="unused",
+    )
+    # An index from before sizes and times were recorded: every entry lacks them.
+    index.write(
+        settings.index_root,
+        "unused",
+        [
+            index.Entry(
+                id=m.id, path=m.path, created=m.created, content_hash=m.content_hash
+            )
+            for m in memories.discover(settings.memories_root, tmp_path)
+        ],
+        np.eye(3, 4, dtype=np.float32),
+    )
+
+    reads: list[str] = []
+    real_read = memories.read
+
+    def counting_read(path: Path, root: Path) -> memories.Memory:
+        reads.append(path.name)
+        return real_read(path, root)
+
+    monkeypatch.setattr(memories, "read", counting_read)
+
+    # First sync after the upgrade reads everything once, embeds nothing, and records
+    # the sizes and times.
+    first = sync.sync(settings)
+    assert sorted(reads) == ["1.md", "2.md", "3.md"]
+    assert first.embedded == 0
+
+    reads.clear()
+    second = sync.sync(settings)
+    assert reads == []
+    assert (second.embedded, second.reused) == (0, 3)
+
+    _ = (folder / "3.md").write_text(
+        f"---\ncreated: {created}\n---\n\nmemory 3, revised\n", encoding="utf-8"
+    )
+
+    def fake_embed(
+        _self: object, texts: list[str]
+    ) -> Iterator[embeddings.EmbeddedBatch]:
+        yield embeddings.EmbeddedBatch(
+            indices=list(range(len(texts))), vectors=[[0.0, 0.0, 0.0, 1.0]] * len(texts)
+        )
+
+    monkeypatch.setattr(embeddings.Embedder, "embed_documents", fake_embed)
+    reads.clear()
+    third = sync.sync(settings)
+    assert reads == ["3.md"]
+    assert (third.embedded, third.reused) == (1, 2)

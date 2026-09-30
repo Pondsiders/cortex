@@ -62,26 +62,61 @@ def sync(
     """
     root: Path = settings.index_root
 
-    on_disk = list(
-        memories_module.discover(settings.memories_root, settings.cortex_root)
-    )
-    live = [memory for memory in on_disk if not memory.forgotten]
-    live_ids = {memory.id for memory in live}
-
     existing = index_module.Index.load(root, expect_model=settings.embedding_model)
     indexed_hashes = {} if existing is None else existing.hashes()
     indexed_rows = {} if existing is None else existing.rows()
+    by_path = {} if existing is None else {e.path: e for e in existing.entries}
+
+    # A file whose size and modification time match what the index recorded is taken
+    # at the index's word and never opened. Everything else is read: new files,
+    # edited ones, forgotten ones (which the index doesn't hold), and everything at
+    # all under --force or in an index from before these were recorded.
+    entries: list[index_module.Entry] = []
+    bodies: dict[int, str] = {}
+    restated = 0
+    for item in memories_module.scan(settings.memories_root, settings.cortex_root):
+        known = None if force else by_path.get(item.path)
+        if (
+            known is not None
+            and known.mtime_ns == item.mtime_ns
+            and known.size == item.size
+        ):
+            entries.append(known)
+            continue
+        memory = memories_module.read(
+            settings.cortex_root / item.path, settings.cortex_root
+        )
+        if memory.forgotten:
+            continue
+        if known is not None:
+            restated += 1
+        entries.append(
+            index_module.Entry(
+                id=memory.id,
+                path=memory.path,
+                created=memory.created,
+                content_hash=memory.content_hash,
+                mtime_ns=item.mtime_ns,
+                size=item.size,
+            )
+        )
+        bodies[memory.id] = memory.body
+    live_ids = {entry.id for entry in entries}
 
     reusable_ids: set[int] = (
         set()
         if force
-        else {m.id for m in live if indexed_hashes.get(m.id) == m.content_hash}
+        else {e.id for e in entries if indexed_hashes.get(e.id) == e.content_hash}
     )
-    stale = [memory for memory in live if memory.id not in reusable_ids]
+    stale = [entry for entry in entries if entry.id not in reusable_ids]
     dropped = len(set(indexed_rows) - live_ids)
 
-    if not stale and dropped == 0 and existing is not None:
-        return Result(total=len(live), embedded=0, reused=len(reusable_ids), dropped=0)
+    # A file that was touched but not changed keeps its vector, but the index still
+    # has to learn its new size and time, or it would be read on every sync forever.
+    if not stale and dropped == 0 and restated == 0 and existing is not None:
+        return Result(
+            total=len(entries), embedded=0, reused=len(reusable_ids), dropped=0
+        )
 
     embedder = Embedder(settings, batch_size=batch_size, concurrency=concurrency)
     dimensions = (
@@ -90,15 +125,9 @@ def sync(
         else embedder.dimensions()
     )
 
-    entries = [
-        index_module.Entry(
-            id=m.id, path=m.path, created=m.created, content_hash=m.content_hash
-        )
-        for m in live
-    ]
-    matrix = np.zeros((len(live), dimensions), dtype=np.float32)
-    filled = np.zeros(len(live), dtype=bool)
-    position_of = {memory.id: position for position, memory in enumerate(live)}
+    matrix = np.zeros((len(entries), dimensions), dtype=np.float32)
+    filled = np.zeros(len(entries), dtype=bool)
+    position_of = {entry.id: position for position, entry in enumerate(entries)}
 
     if existing is not None:
         for memory_id in reusable_ids:
@@ -119,7 +148,7 @@ def sync(
         on_start(len(stale))
 
     for batch_number, batch in enumerate(
-        embedder.embed_documents([m.body for m in stale]), start=1
+        embedder.embed_documents([bodies[entry.id] for entry in stale]), start=1
     ):
         for offset, vector in zip(batch.indices, batch.vectors, strict=True):
             position = position_of[stale[offset].id]
