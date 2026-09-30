@@ -126,6 +126,19 @@ def test_what_jeffery_types_is_decomposed(prompt: str) -> None:
     assert recollection._unspoken(prompt) is None  # pyright: ignore[reportPrivateUsage]
 
 
+def test_a_cued_memory_shows_its_scale() -> None:
+    when = pendulum.datetime(2026, 9, 30, 9, tz="America/Los_Angeles")
+    cued = recollection.Recollected(
+        id=7, created=when, body="b", query="q", score=0.45, sigma=5.14
+    )
+    stray = recollection.Recollected(
+        id=8, created=when, body="b", query=None, score=None
+    )
+    assert "- score: 0.45 (+5.1σ)" in cued.block()  # noqa: RUF001
+    assert "- random memory" in stray.block()
+    assert "σ" not in stray.block()  # noqa: RUF001
+
+
 def test_a_lone_oversized_memory_is_sliced_not_dropped(tmp_path: Path) -> None:
     settings = _corpus(tmp_path, {1: "y" * (recollection.BUDGET * 2)})
     result = recollection.recollect(settings, prompt="/start", session_id=SESSION)

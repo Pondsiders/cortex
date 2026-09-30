@@ -62,14 +62,23 @@ class Recollected:
     body: str
     query: str | None
     score: float | None
+    sigma: float | None = None
+    """How far the score sits above this query's own mean over the whole corpus, in
+    standard deviations. A raw cosine can't be read without it: 0.45 is a strong hit
+    for a query whose corpus mean is 0.15 and nothing at all for one whose mean is 0.40
+    (#5). Shown for the reader to judge, never used as a threshold."""
 
     def block(self) -> str:
         """Render the memory as a ``## Memory #...`` block."""
-        provenance = (
-            ["- random memory"]
-            if self.query is None or self.score is None
-            else [f"- query: {self.query!r}", f"- score: {self.score:.2f}"]
-        )
+        if self.query is None or self.score is None:
+            provenance = ["- random memory"]
+        else:
+            # ruff reads the sigma as a confusable 'o'; it's display text, not a name.
+            scale = "" if self.sigma is None else f" ({self.sigma:+.1f}σ)"  # noqa: RUF001
+            provenance = [
+                f"- query: {self.query!r}",
+                f"- score: {self.score:.2f}{scale}",
+            ]
         return "\n".join(
             [
                 f"## Memory #{self.id}",
@@ -297,6 +306,10 @@ def _cued(
     )
 
     scores = vectors @ np.asarray(loaded.vectors).T
+    # Each query's scale is taken over the whole corpus before anything is masked, the
+    # same way `cortex search` computes it, so the two read alike.
+    baseline = scores.mean(axis=1)
+    deviation = scores.std(axis=1)
     scores[:, ~eligible] = -np.inf
 
     found: list[Recollected] = []
@@ -316,6 +329,11 @@ def _cued(
                 body=body,
                 query=queries[q],
                 score=score,
+                sigma=(
+                    float((score - baseline[q]) / deviation[q])
+                    if deviation[q]
+                    else None
+                ),
             )
         )
     return queries, found

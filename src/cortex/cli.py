@@ -350,7 +350,12 @@ def hook_recollection() -> None:
         degraded=result.degraded,
         prompt=prompt,
         queries=[
-            {"q": m.query, "id": m.id, "score": round(m.score, 4)}
+            {
+                "q": m.query,
+                "id": m.id,
+                "score": round(m.score, 4),
+                "sigma": None if m.sigma is None else round(m.sigma, 2),
+            }
             for m in result.memories
             if m.query is not None and m.score is not None
         ],
