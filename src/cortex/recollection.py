@@ -236,7 +236,13 @@ def _read(settings: Settings, entry: index_module.Entry) -> str | None:
 
 
 def recollect(
-    settings: Settings, *, prompt: str, session_id: str, deadline: float = DEADLINE
+    settings: Settings,
+    *,
+    prompt: str,
+    session_id: str,
+    deadline: float = DEADLINE,
+    before: datetime | None = None,
+    trace: list[dict[str, object]] | None = None,
 ) -> Recollection:
     """Recall what a message brings to mind.
 
@@ -245,6 +251,9 @@ def recollect(
         prompt: The user's message, verbatim.
         session_id: The harness's identifier for this session.
         deadline: Seconds allowed for the network calls.
+        before: Hide every memory created at or after this moment, as if the corpus
+            were as it stood then. For replaying old prompts; the hook never sets it.
+        trace: If given, the keyword channel records what became of each phrase.
 
     Returns:
         The memories, in the order they should be shown.
@@ -262,6 +271,12 @@ def recollect(
     ids = np.fromiter((entry.id for entry in loaded.entries), dtype=np.int64)
     mask = seen.Seen.load(session_id, int(ids.max(initial=0)))
     eligible = mask.filter(ids)
+    visible: np.ndarray | None = None
+    if before is not None:
+        visible = np.fromiter(
+            (entry.created < before for entry in loaded.entries), dtype=bool
+        )
+        eligible &= visible
 
     queries: list[str] = []
     phrases: list[str] = []
@@ -273,7 +288,7 @@ def recollect(
     if skipped is None:
         try:
             queries, phrases, found, topic = _cued(
-                settings, prompt, loaded, eligible, deadline
+                settings, prompt, loaded, eligible, deadline, visible, trace
             )
         # Any failure of the cued path degrades to the Lagniappe, which needs no
         # network of its own.
@@ -334,6 +349,8 @@ def _cued(
     loaded: index_module.Index,
     eligible: np.ndarray,
     deadline: float,
+    visible: np.ndarray | None = None,
+    trace: list[dict[str, object]] | None = None,
 ) -> tuple[list[str], list[str], list[Recollected], np.ndarray | None]:
     """Run the cued path: decompose, embed, and take the best row per query.
 
@@ -400,7 +417,9 @@ def _cued(
     # Keyword hits go in right after the first cued memory: when grep lands it has
     # matched exact bytes, which makes it more like the best query than the long tail.
     claimed = {row for row, _ in assigned.values()}
-    keyword = _keyword(settings, loaded, eligible, claimed, phrases, closeness, topic)
+    keyword = _keyword(
+        settings, loaded, eligible, claimed, phrases, closeness, topic, visible, trace
+    )
     found[1:1] = keyword
     return queries, phrases, found, topic
 
@@ -454,9 +473,16 @@ def _hits(settings: Settings, rows_by_id: dict[int, int], phrase: str) -> list[i
     that finds nothing falls back to its words, and the words' hits are pooled.
     """
     ids = _grep(settings.memories_root, phrase)
-    words = {w.strip(_EDGE_PUNCTUATION).lower() for w in phrase.split()} - {""}
     if not ids and len(phrase.split()) > 1:
-        ids = list({i for word in words for i in _grep(settings.memories_root, word)})
+        # Only words rare in their own right: "S. T. Joshi" pooled "S" and "T" and
+        # matched 21,447 memories.
+        words = {w.strip(_EDGE_PUNCTUATION).lower() for w in phrase.split()} - {""}
+        pooled: set[int] = set()
+        for word in words:
+            found = _grep(settings.memories_root, word)
+            if len(found) <= MAX_MATCHES:
+                pooled.update(found)
+        ids = list(pooled)
     return [rows_by_id[i] for i in ids if i in rows_by_id]
 
 
@@ -468,13 +494,37 @@ def _keyword(
     phrases: list[str],
     closeness: np.ndarray,
     topic: np.ndarray | None,
+    visible: np.ndarray | None = None,
+    trace: list[dict[str, object]] | None = None,
 ) -> list[Recollected]:
     """Grep for each distinctive phrase and keep its most topical unseen hit.
 
     Grep answers with a set, not a ranking, so the whole message ranks it: of the
     memories containing the phrase, the one closest to what Jeffery actually said wins.
     A memory grep finds that the index doesn't hold, a forgotten one, drops out here.
+
+    ``visible`` hides rows outright, for replaying an old prompt against a corpus that
+    has since grown; unlike ``eligible`` it doesn't make grep stand down. ``trace``, if
+    given, gets one record per phrase saying what became of it.
     """
+
+    def note(
+        phrase: str, outcome: str, matches: int = 0, row: int | None = None
+    ) -> None:
+        if trace is not None:
+            memory_id = None if row is None else loaded.entries[row].id
+            trace.append(
+                {
+                    "phrase": phrase,
+                    "outcome": outcome,
+                    "matches": matches,
+                    "id": memory_id,
+                    "topicality": None
+                    if topic is None or row is None
+                    else float(topic[row]),
+                }
+            )
+
     rows_by_id = loaded.rows()
     taken = set(claimed)
     kept: list[Recollected] = []
@@ -483,20 +533,34 @@ def _keyword(
         if not phrase:
             continue
         hits = _hits(settings, rows_by_id, phrase)
+        if visible is not None:
+            hits = [row for row in hits if visible[row]]
+        if not hits:
+            note(raw, "no match")
+            continue
         # A phrase in this many memories isn't distinctive here, whatever it looks like.
-        if not hits or len(hits) > MAX_MATCHES:
+        if len(hits) > MAX_MATCHES:
+            note(raw, "too common", len(hits))
             continue
         # The best hit or nothing. If it's already in front of Alpha, grep has only
         # confirmed the cued path, and the runner-up is a worse memory by construction:
         # "Martha" fell through to Martha Bullock when the right one was already shown.
         row = max(hits, key=lambda r: float(closeness[r]))
         if not eligible[row] or row in taken:
+            note(raw, "already shown", len(hits), row)
+            continue
+        # Grep is additive, never distractive: it doesn't change the subject. The best
+        # hit is also the most topical one, so if it sits below the message's own mean
+        # over the corpus, every hit does. The cued path may wander; this may not.
+        if topic is not None and topic[row] <= 0:
+            note(raw, "off topic", len(hits), row)
             continue
         entry = loaded.entries[row]
         body = _read(settings, entry)
         if body is None:
             continue
         taken.add(row)
+        note(raw, "shown", len(hits), row)
         kept.append(
             Recollected(
                 id=entry.id,
