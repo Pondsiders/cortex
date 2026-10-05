@@ -299,9 +299,20 @@ def hook_recollection() -> None:
         unanswered=[
             q for q in result.queries if q not in {m.query for m in result.memories}
         ],
-        lagniappe=next((m.id for m in result.memories if m.query is None), None),
+        topical=next((m.id for m in result.memories if m.topical), None),
+        topical_topicality=next(
+            (_round(m.topicality) for m in result.memories if m.topical), None
+        ),
+        lagniappe=next(
+            (m.id for m in result.memories if m.query is None and not m.topical), None
+        ),
         lagniappe_topicality=next(
-            (_round(m.topicality) for m in result.memories if m.query is None), None
+            (
+                _round(m.topicality)
+                for m in result.memories
+                if m.query is None and not m.topical
+            ),
+            None,
         ),
         dropped=result.dropped,
         skipped=result.skipped,

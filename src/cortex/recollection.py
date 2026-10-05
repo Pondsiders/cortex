@@ -5,11 +5,16 @@ thing. It fires on every message, nobody chose it, and what it surfaces is the l
 authoritative thing in the window rather than the most. The plumbing is the same
 embeddings and the same cosine; the shape is the opposite.
 
-Two paths produce a result set, and only one of them can fail:
+Three paths produce a result set, and only the first two can fail:
 
 *Cued.* The chat model decomposes the message into query strings, all of them are
 embedded in one pass, and each takes the highest-scoring memory this session has not
 already been shown.
+
+*Most topical.* The whole message is embedded beside the queries to measure every
+memory's topicality. The single most topical unseen memory rides along when no query
+claimed it. Seven of twelve long real messages had their most topical memory found by
+no query: the queries took the message apart and lost what it was about (Oct 5 2026).
 
 *The Lagniappe.* One memory drawn uniformly at random. It answers nothing and is
 related to nothing, which is the point: cosine recall is rich-get-richer, and a corpus
@@ -79,11 +84,16 @@ class Recollected:
     ``sigma`` grades the memory against the chat model's query, this grades it against
     what Jeffery actually said, so a high ``sigma`` with a low topicality is a query
     that wandered off. Random memories get one too."""
+    topical: bool = False
+    """Brought by the whole message rather than a query: the most topical memory, when
+    no query claimed it."""
 
     def block(self) -> str:
         """Render the memory as a ``## Memory #...`` block."""
         # ruff reads the sigma as a confusable 'o'; it's display text, not a name.
-        if self.query is None or self.score is None:
+        if self.topical:
+            provenance = ["- most topical (whole message)"]
+        elif self.query is None or self.score is None:
             provenance = ["- random memory"]
         else:
             scale = "" if self.sigma is None else f" ({self.sigma:+.1f}σ)"  # noqa: RUF001
@@ -364,7 +374,43 @@ def _cued(
                 topicality=None if topic is None else float(topic[row]),
             )
         )
+    topical = _most_topical(settings, loaded, eligible, topic, assigned)
+    if topical is not None:
+        found.append(topical)
     return queries, found, topic
+
+
+def _most_topical(
+    settings: Settings,
+    loaded: index_module.Index,
+    eligible: np.ndarray,
+    topic: np.ndarray | None,
+    assigned: dict[int, tuple[int, float]],
+) -> Recollected | None:
+    """The most topical unseen memory, unless a query already claimed it.
+
+    Only reached when the message decomposed into at least one query, so an
+    acknowledgement with no topic of its own doesn't get its nearest noise promoted.
+    """
+    if topic is None:
+        return None
+    ranked = np.where(eligible, topic, -np.inf)
+    row = int(np.argmax(ranked))
+    if not np.isfinite(ranked[row]) or row in {r for r, _ in assigned.values()}:
+        return None
+    entry = loaded.entries[row]
+    body = _read(settings, entry)
+    if body is None:
+        return None
+    return Recollected(
+        id=entry.id,
+        created=entry.created,
+        body=body,
+        query=None,
+        score=None,
+        topicality=float(topic[row]),
+        topical=True,
+    )
 
 
 def _lagniappe(

@@ -145,6 +145,22 @@ def test_a_cued_memory_shows_its_scale() -> None:
     assert "σ" not in bell.block()  # noqa: RUF001
 
 
+def test_the_most_topical_memory_says_where_it_came_from() -> None:
+    when = pendulum.datetime(2026, 10, 5, 12, tz="America/Los_Angeles")
+    topical = recollection.Recollected(
+        id=7,
+        created=when,
+        body="b",
+        query=None,
+        score=None,
+        topicality=4.5,
+        topical=True,
+    )
+    block = topical.block()
+    assert "- most topical (whole message)\n- topicality: +4.5σ" in block  # noqa: RUF001
+    assert "random memory" not in block
+
+
 def test_a_lone_oversized_memory_is_sliced_not_dropped(tmp_path: Path) -> None:
     settings = _corpus(tmp_path, {1: "y" * (recollection.BUDGET * 2)})
     result = recollection.recollect(settings, prompt="/start", session_id=SESSION)
