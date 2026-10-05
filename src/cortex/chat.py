@@ -53,9 +53,17 @@ whom he is speaking; she is more than one year old, stateful and unique.
 
 ## Important
 
-Remember that Jeffery is not speaking to you. Jeffery is speaking to Alpha. Construct \
-your queries with that in mind.
+Remember that Jeffery is not speaking to you. Jeffery is speaking to Alpha. Write each \
+query as a plain statement of its topic. Don't address anyone, and don't use the names \
+Jeffery or Alpha.
 """
+"""Names are kept out of the queries because nearly every memory has one or both in
+it, so a name doesn't narrow a search, it drags it toward memories *about* the person
+named. Under the old last line, "Construct your queries with that in mind," a quarter
+of the queries for six real messages named someone ("Alpha, has anyone experimented
+with tying W_V and W_O?") and those pulled memories about Alpha instead of weight
+tying. Asked to write "in first person, as Alpha," the model wrote dialogue
+("Jeffery, could you tell me…") and the poison moved to the other name. Oct 5 2026."""
 
 _RESPONSE_FORMAT: dict[str, Any] = {
     "type": "json_schema",
