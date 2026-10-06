@@ -4,11 +4,13 @@ Cortex is a memory system for Claude Code. Specifically, it's a memory system fo
 
 Cortex has two main parts: the CLI, which provides a convenient interface for storing and searching, and Recollection, which is the part that works automatically to inject memories into Alpha's context.
 
+For the illustrated version, with a recollection you can watch happen one memory at a time, see [cortex.pondsiders.dev](https://cortex.pondsiders.dev).
+
 ## Architecture
 
 Couldn't be simpler: a directory tree of Markdown files, one per memory, plus a NumPy cache of embedding vectors for semantic search.
 
-When the agent stores a memory using the Cortex CLI, that memory gets embedded by the embedding model of choice (we use Qwen 3 Embedding 4B). The embedding vector is stored in an on-disk NumPy array; as of this writing, Alpha has more than 20,000 memories in a 210 MB cache.
+When the agent stores a memory using the Cortex CLI, that memory gets embedded by the embedding model of choice (we use Qwen 3 Embedding 4B). The embedding vector is stored in an on-disk NumPy array, memory-mapped at search time: 2,560 float32s, about ten kilobytes per memory.
 
 Each user prompt submitted gets passed through a chat model (we use Gemma 4 E4B) with the instruction to decompose the prompt into semantic search query strings. The resulting query strings get batch-embedded and then it's just one matrix multiplication.
 
@@ -35,13 +37,14 @@ The first is the score against the chat model's query. The second, **topicality*
 The configuration file goes in `~/.config/cortex/config.env`. Values shown below are examples; this is the configuration we use at home.
 
 ```
-CORTEX_ROOT="${HOME}/Vault/cortex"
+CORTEX_ROOT="${HOME}/memory"
 CHAT_MODEL="google/gemma-4-e4b-it"
 CHAT_ENDPOINT="https://localhost:8080/v1"
 CHAT_API_KEY="<key>"
 EMBEDDING_MODEL="Qwen/Qwen3-Embedding-4B"
 EMBEDDING_ENDPOINT="https://localhost:8080/v1"
 EMBEDDING_API_KEY="<key>"
+INDEX_DIR="/cortex-index"
 ```
 
 `INDEX_DIR` is optional. The index (`vectors.npy`, `index.jsonl`, `manifest.json`) lives in `$XDG_DATA_HOME/cortex` unless it says otherwise. Point it at shared storage when another machine needs to read the index; only one machine should write it. Writes are atomic renames, so a reader sees either the old index or the new one.
