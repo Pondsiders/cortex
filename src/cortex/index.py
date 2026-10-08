@@ -139,7 +139,7 @@ class Index:
         if expect_model is not None and model != expect_model:
             msg = (
                 f"index at {root} was built with {model!r}, "
-                f"but {expect_model!r} is configured; reindex before using it"
+                f"but {expect_model!r} is configured; run cortex reindex --force"
             )
             raise IndexError_(msg)
 
@@ -155,7 +155,7 @@ class Index:
             msg = (
                 f"index at {root} is inconsistent: manifest says {rows} rows, "
                 f"{VECTORS} has {vectors.shape[0]}, {ENTRIES} has {len(entries)}; "
-                f"reindex to rebuild it"
+                f"run cortex reindex --force to rebuild it"
             )
             raise IndexError_(msg)
 

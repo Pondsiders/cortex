@@ -51,7 +51,8 @@ def sync(
 
     Args:
         settings: Where the memories and the index live, and which models to use.
-        force: Re-embed everything, ignoring content hashes.
+        force: Re-embed everything, ignoring content hashes and whatever index is
+            already on disk.
         batch_size: Texts per embedding request.
         concurrency: Embedding requests in flight.
         on_start: Called once with the number of memories about to be embedded.
@@ -62,7 +63,14 @@ def sync(
     """
     root: Path = settings.index_root
 
-    existing = index_module.Index.load(root, expect_model=settings.embedding_model)
+    # --force re-embeds everything, so it has no use for the old index, and must not
+    # load it: loading is what refuses an index that is inconsistent or was built by a
+    # different model, and --force is the way out of exactly those two states.
+    existing = (
+        None
+        if force
+        else index_module.Index.load(root, expect_model=settings.embedding_model)
+    )
     indexed_hashes = {} if existing is None else existing.hashes()
     indexed_rows = {} if existing is None else existing.rows()
     by_path = {} if existing is None else {e.path: e for e in existing.entries}

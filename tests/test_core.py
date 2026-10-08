@@ -175,3 +175,69 @@ def test_sync_reads_only_the_files_that_changed(
     third = sync.sync(settings)
     assert reads == ["3.md"]
     assert (third.embedded, third.reused) == (1, 2)
+
+
+@pytest.mark.parametrize("damage", ["inconsistent", "other_model"])
+def test_reindex_force_recovers_an_index_that_refuses_to_load(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, damage: str
+) -> None:
+    folder = tmp_path / "memories" / "2026-09-30"
+    folder.mkdir(parents=True)
+    created = pendulum.datetime(2026, 9, 30, 9, tz=LA).isoformat()
+    for ident in (1, 2, 3):
+        _ = (folder / f"{ident}.md").write_text(
+            f"---\ncreated: {created}\n---\n\nmemory {ident}\n", encoding="utf-8"
+        )
+
+    settings = Settings(
+        cortex_root=tmp_path,
+        index_dir=tmp_path / "index",
+        chat_model="unused",
+        chat_endpoint="unused",
+        chat_api_key="unused",
+        embedding_model="new-model",
+        embedding_endpoint="unused",
+        embedding_api_key="unused",
+    )
+    on_disk = list(memories.discover(settings.memories_root, tmp_path))
+    index.write(
+        settings.index_root,
+        "new-model" if damage == "inconsistent" else "old-model",
+        [
+            index.Entry(
+                id=m.id, path=m.path, created=m.created, content_hash=m.content_hash
+            )
+            for m in on_disk
+        ],
+        np.eye(3, 4, dtype=np.float32),
+    )
+    if damage == "inconsistent":
+        manifest = settings.index_root / index.MANIFEST
+        _ = manifest.write_text(
+            manifest.read_text(encoding="utf-8").replace('"rows": 3', '"rows": 4'),
+            encoding="utf-8",
+        )
+
+    with pytest.raises(index.IndexError_, match="reindex --force"):
+        _ = sync.sync(settings)
+
+    def fake_embed(
+        _self: object, texts: list[str]
+    ) -> Iterator[embeddings.EmbeddedBatch]:
+        yield embeddings.EmbeddedBatch(
+            indices=list(range(len(texts))), vectors=[[0.0, 1.0, 0.0]] * len(texts)
+        )
+
+    def fake_dimensions(_self: object) -> int:
+        return 3
+
+    monkeypatch.setattr(embeddings.Embedder, "embed_documents", fake_embed)
+    monkeypatch.setattr(embeddings.Embedder, "dimensions", fake_dimensions)
+
+    result = sync.sync(settings, force=True)
+
+    assert (result.embedded, result.reused) == (3, 0)
+    rebuilt = index.Index.load(settings.index_root, expect_model="new-model")
+    assert rebuilt is not None
+    assert [e.id for e in rebuilt.entries] == [1, 2, 3]
+    assert rebuilt.vectors.shape == (3, 3)
