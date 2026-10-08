@@ -42,6 +42,7 @@ def sync(
     settings: Settings,
     *,
     force: bool = False,
+    timeout: float | None = None,
     batch_size: int = BATCH_SIZE,
     concurrency: int = CONCURRENCY,
     on_start: Callable[[int], None] | None = None,
@@ -49,8 +50,12 @@ def sync(
 ) -> Result:
     """Rebuild the index so it matches the memory files on disk.
 
+    Holds the index's write lock from load to rename, so concurrent syncs take turns.
+
     Args:
         settings: Where the memories and the index live, and which models to use.
+        timeout: Seconds to wait if another sync holds the lock, or None to wait
+            as long as it takes.
         force: Re-embed everything, ignoring content hashes and whatever index is
             already on disk.
         batch_size: Texts per embedding request.
@@ -60,7 +65,30 @@ def sync(
 
     Returns:
         Counts describing what happened.
+
+    Raises:
+        cortex.index.Busy: If another sync still holds the lock after ``timeout``.
     """
+    with index_module.locked(settings.index_root, timeout=timeout):
+        return _sync(
+            settings,
+            force=force,
+            batch_size=batch_size,
+            concurrency=concurrency,
+            on_start=on_start,
+            on_progress=on_progress,
+        )
+
+
+def _sync(
+    settings: Settings,
+    *,
+    force: bool,
+    batch_size: int,
+    concurrency: int,
+    on_start: Callable[[int], None] | None,
+    on_progress: Callable[[int], None] | None,
+) -> Result:
     root: Path = settings.index_root
 
     # --force re-embeds everything, so it has no use for the old index, and must not

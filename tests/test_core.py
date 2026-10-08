@@ -241,3 +241,39 @@ def test_reindex_force_recovers_an_index_that_refuses_to_load(
     assert rebuilt is not None
     assert [e.id for e in rebuilt.entries] == [1, 2, 3]
     assert rebuilt.vectors.shape == (3, 3)
+
+
+def test_a_sync_that_runs_out_of_patience_is_turned_away_while_another_holds_the_index(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "memories").mkdir()
+    settings = Settings(
+        cortex_root=tmp_path,
+        index_dir=tmp_path / "index",
+        chat_model="unused",
+        chat_endpoint="unused",
+        chat_api_key="unused",
+        embedding_model="unused",
+        embedding_endpoint="unused",
+        embedding_api_key="unused",
+    )
+
+    with index.locked(settings.index_root, timeout=0), pytest.raises(index.Busy):
+        _ = sync.sync(settings, timeout=0.1)
+
+    # And the lock is released afterwards, by both of them.
+    with index.locked(settings.index_root, timeout=0):
+        pass
+
+
+def test_writing_the_index_leaves_no_staging_files_behind(tmp_path: Path) -> None:
+    created = pendulum.datetime(2026, 9, 30, 9, tz=LA)
+    entries = [index.Entry(id=1, path="m/1.md", created=created, content_hash="h")]
+
+    index.write(tmp_path, "unused", entries, np.eye(1, 4, dtype=np.float32))
+
+    assert sorted(p.name for p in tmp_path.iterdir()) == [
+        index.ENTRIES,
+        index.MANIFEST,
+        index.VECTORS,
+    ]

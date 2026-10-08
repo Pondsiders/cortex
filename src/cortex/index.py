@@ -22,13 +22,24 @@ in-place append would save that and cost the atomicity, which is a bad trade.
 
 ``manifest.json`` is replaced last. If a rebuild dies mid-flight the manifest disagrees
 with what is on disk, and loading refuses rather than serving a truncated corpus.
+
+Writers take turns. Two syncs that both loaded the same index would each write it back
+with only their own new memory, and their renames could interleave into three files
+from two different indexes. :func:`locked` holds an exclusive lock on ``index.lock`` in
+the index directory from load to rename, so one writer at a time. Readers take no lock;
+the renames are what they rely on. The lock is ``flock``, which is only trustworthy on a
+local filesystem, so the index should be written by one machine and only read by others.
 """
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
-from collections.abc import Sequence
+import tempfile
+import time
+from collections.abc import Generator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -41,13 +52,56 @@ VECTORS = "vectors.npy"
 ENTRIES = "index.jsonl"
 MANIFEST = "manifest.json"
 
-TMP_VECTORS = "vectors.tmp.npy"
-TMP_ENTRIES = "index.jsonl.tmp"
-TMP_MANIFEST = "manifest.json.tmp"
+LOCK = "index.lock"
+LOCK_POLL = 0.05
+"""Seconds between attempts while waiting for the lock with a timeout."""
 
 
 class IndexError_(Exception):
     """Raised when the index on disk cannot be trusted."""
+
+
+class Busy(Exception):
+    """Raised when another writer still holds the index after the caller's timeout."""
+
+
+@contextmanager
+def locked(root: Path, *, timeout: float | None) -> Generator[None]:
+    """Hold the index's write lock for the duration of the block.
+
+    Args:
+        root: The index directory; created if absent.
+        timeout: Seconds to wait for the lock before giving up, or None to wait as
+            long as it takes.
+
+    Raises:
+        Busy: If the lock is still held when ``timeout`` runs out.
+    """
+    root.mkdir(parents=True, exist_ok=True)
+    with (root / LOCK).open("a") as handle:
+        if timeout is None:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+        else:
+            _acquire_within(handle.fileno(), timeout, root)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+
+
+def _acquire_within(fd: int, timeout: float, root: Path) -> None:
+    """Poll for the lock until it's ours or ``timeout`` seconds have passed."""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            if time.monotonic() >= deadline:
+                msg = f"another process is writing the index at {root}"
+                raise Busy(msg) from error
+            time.sleep(LOCK_POLL)
+        else:
+            return
 
 
 def normalize(vectors: np.ndarray) -> np.ndarray:
@@ -190,49 +244,62 @@ def write(
 
     root.mkdir(parents=True, exist_ok=True)
 
-    tmp_vectors = root / TMP_VECTORS
-    with tmp_vectors.open("wb") as handle:
-        np.save(handle, normalize(np.asarray(vectors, dtype=np.float32)))
-        handle.flush()
-        os.fsync(handle.fileno())
+    # Private names, so a writer that ignores the lock or a crash mid-write can't leave
+    # one process renaming another's half-written file.
+    tmp_vectors = _staging(root, VECTORS)
+    tmp_entries = _staging(root, ENTRIES)
+    tmp_manifest = _staging(root, MANIFEST)
+    try:
+        with tmp_vectors.open("wb") as handle:
+            np.save(handle, normalize(np.asarray(vectors, dtype=np.float32)))
+            handle.flush()
+            os.fsync(handle.fileno())
 
-    tmp_entries = root / TMP_ENTRIES
-    with tmp_entries.open("w", encoding="utf-8") as handle:
-        for entry in entries:
-            _ = handle.write(
-                json.dumps(
-                    {
-                        "id": entry.id,
-                        "path": entry.path,
-                        "created": entry.created.isoformat(),
-                        "content_hash": entry.content_hash,
-                        "mtime_ns": entry.mtime_ns,
-                        "size": entry.size,
-                    },
-                    ensure_ascii=False,
+        with tmp_entries.open("w", encoding="utf-8") as handle:
+            for entry in entries:
+                _ = handle.write(
+                    json.dumps(
+                        {
+                            "id": entry.id,
+                            "path": entry.path,
+                            "created": entry.created.isoformat(),
+                            "content_hash": entry.content_hash,
+                            "mtime_ns": entry.mtime_ns,
+                            "size": entry.size,
+                        },
+                        ensure_ascii=False,
+                    )
+                    + "\n"
                 )
-                + "\n"
+            handle.flush()
+            os.fsync(handle.fileno())
+
+        with tmp_manifest.open("w", encoding="utf-8") as handle:
+            json.dump(
+                {
+                    "model": model,
+                    "dimensions": int(vectors.shape[1]),
+                    "rows": len(entries),
+                    "written": pendulum.now().isoformat(),
+                },
+                handle,
+                indent=2,
             )
-        handle.flush()
-        os.fsync(handle.fileno())
+            _ = handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
 
-    tmp_manifest = root / TMP_MANIFEST
-    with tmp_manifest.open("w", encoding="utf-8") as handle:
-        json.dump(
-            {
-                "model": model,
-                "dimensions": int(vectors.shape[1]),
-                "rows": len(entries),
-                "written": pendulum.now().isoformat(),
-            },
-            handle,
-            indent=2,
-        )
-        _ = handle.write("\n")
-        handle.flush()
-        os.fsync(handle.fileno())
+        # Manifest last: until it moves, the old index is still the live one.
+        os.replace(tmp_vectors, root / VECTORS)
+        os.replace(tmp_entries, root / ENTRIES)
+        os.replace(tmp_manifest, root / MANIFEST)
+    finally:
+        for leftover in (tmp_vectors, tmp_entries, tmp_manifest):
+            leftover.unlink(missing_ok=True)
 
-    # Manifest last: until it moves, the old index is still the live one.
-    os.replace(tmp_vectors, root / VECTORS)
-    os.replace(tmp_entries, root / ENTRIES)
-    os.replace(tmp_manifest, root / MANIFEST)
+
+def _staging(root: Path, name: str) -> Path:
+    """Create an empty, uniquely named staging file for ``name`` in ``root``."""
+    fd, path = tempfile.mkstemp(dir=root, prefix=f".{name}.", suffix=".tmp")
+    os.close(fd)
+    return Path(path)

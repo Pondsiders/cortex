@@ -23,6 +23,9 @@ from cortex import timestamp as timestamp_module
 from cortex.config import Settings
 from cortex.embeddings import BATCH_SIZE, CONCURRENCY
 
+STORE_LOCK_TIMEOUT = 10.0
+"""Seconds a store waits for another sync before leaving its memory to the next."""
+
 
 def _say(message: str) -> None:
     """Write a status line to stderr, safely alongside an active progress bar."""
@@ -30,7 +33,12 @@ def _say(message: str) -> None:
 
 
 def _run_sync(
-    settings: Settings, *, force: bool, batch_size: int, concurrency: int
+    settings: Settings,
+    *,
+    force: bool,
+    batch_size: int,
+    concurrency: int,
+    timeout: float | None = None,
 ) -> sync_module.Result:
     """Run a sync with a progress bar, returning its result."""
     bar: tqdm[Any] | None = None
@@ -54,6 +62,7 @@ def _run_sync(
         return sync_module.sync(
             settings,
             force=force,
+            timeout=timeout,
             batch_size=batch_size,
             concurrency=concurrency,
             on_start=on_start,
@@ -92,9 +101,21 @@ def store() -> None:
     path = _write_next(folder, settings.memories_root, content)
     console.out(str(path.relative_to(settings.cortex_root)))
 
-    result = _run_sync(
-        settings, force=False, batch_size=BATCH_SIZE, concurrency=CONCURRENCY
-    )
+    # The memory is safe on disk now. Another store's sync takes well under a second,
+    # so wait out a few of those. A sync that holds the index longer than that is a
+    # reindex, and isn't worth hanging for: whichever sync runs next scans the disk
+    # and picks this file up.
+    try:
+        result = _run_sync(
+            settings,
+            force=False,
+            timeout=STORE_LOCK_TIMEOUT,
+            batch_size=BATCH_SIZE,
+            concurrency=CONCURRENCY,
+        )
+    except index_module.Busy:
+        _say("index busy; the next sync will pick this memory up")
+        return
     _say(f"index: {result.total} memories, {result.embedded} embedded")
 
 
