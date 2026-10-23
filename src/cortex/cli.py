@@ -268,41 +268,41 @@ def reindex(force: bool, batch_size: int, concurrency: int) -> None:
 
 @cortex.group()
 def hook() -> None:
-    """Claude Code hook scripts. Each reads its event JSON from standard input."""
+    """What the claude-code-cortex mod calls. Each reads JSON from standard input."""
 
 
-@hook.command("recollection")
-def hook_recollection() -> None:
-    """Recall memories for a UserPromptSubmit event and return them as context.
+@hook.command("prompt")
+def hook_prompt() -> None:
+    """Answer a prompt with the time and what it brings to mind.
 
-    Recollection is enrichment rather than a gate, so nothing here is allowed to cost
-    Jeffery his turn. In particular it must never exit 2, which Claude Code reads as a
-    blocking error on this event: it discards the prompt. Every failure exits 1 with a
-    line on stderr, which the harness shows in the transcript and then carries on.
+    Reads one JSON object from standard input, written by the claude-code-cortex mod:
+    ``text``, ``origin`` (Claude Code's ``origin.kind``), ``command`` (the slash
+    command's name, or null) and ``session_id``. Prints one back: ``context``, the
+    blocks the model reads beside the prompt (the timestamp line, then one per memory),
+    and ``memories``, the same memories as data for the Recollections pane.
+
+    Nothing here is guarded. Bad input, bad config or an origin nobody has seen raises,
+    and the mod hands the traceback to Alpha in place of the context.
     """
     started = time.monotonic()
-    try:
-        event: dict[str, Any] = json.loads(sys.stdin.read())
-        prompt = str(event.get("prompt", ""))
-        session_id = str(event["session_id"])
-    except (ValueError, KeyError) as error:
-        raise SystemExit(_bail(f"unusable hook input: {error}")) from error
+    packet: dict[str, Any] = json.loads(sys.stdin.read())
+    prompt = str(packet["text"])
+    origin = str(packet["origin"])
+    command: str | None = packet["command"]
+    session_id = str(packet["session_id"])
 
-    try:
-        settings = Settings()  # pyright: ignore[reportCallIssue]
-        result = recollection_module.recollect(
-            settings, prompt=prompt, session_id=session_id
-        )
-        context = result.context()
-    # Every failure is caught, because a hook that raises is a hook that costs a turn.
-    except Exception as error:
-        raise SystemExit(_bail(f"recollection failed: {error}")) from error
+    stamp = _timestamp(session_id)
+    spoken = recollection_module.spoken(origin, command=command is not None)
+    settings = Settings()  # pyright: ignore[reportCallIssue]
+    result = recollection_module.recollect(
+        settings, prompt=prompt, session_id=session_id, spoken=spoken
+    )
+    blocks = result.blocks()
 
     elapsed = int((time.monotonic() - started) * 1000)
     log.write(
         "recollection",
         session_id=session_id,
-        prompt_id=event.get("prompt_id"),
         ms=elapsed,
         degraded=result.degraded,
         prompt=prompt,
@@ -335,75 +335,41 @@ def hook_recollection() -> None:
             ),
             None,
         ),
-        dropped=result.dropped,
-        skipped=result.skipped,
-        chars=len(context),
+        skipped=None if spoken else (f"/{command}" if command else origin),
+        chars=sum(len(block) for block in blocks),
     )
 
-    if not context:
-        return
     console.out(
         json.dumps(
             {
-                "hookSpecificOutput": {
-                    "hookEventName": "UserPromptSubmit",
-                    "additionalContext": context,
-                }
-            }
+                "context": [stamp, *blocks],
+                "memories": [memory.record() for memory in result.memories],
+            },
+            ensure_ascii=False,
         )
     )
 
 
-@hook.command("timestamp")
-def hook_timestamp() -> None:
-    """Tell Claude what time it is on a UserPromptSubmit event.
+def _timestamp(session_id: str) -> str:
+    """Mark this message's arrival and return the line saying what time it is.
 
     Every turn is logged, not because the line needs a record but because the corpus
-    does: how many turns a day Alpha actually has is a number the Lagniappe's cadence
-    rests on and nobody has ever measured.
+    does: how many turns a day Alpha actually has is a number nobody has measured.
     """
-    try:
-        event: dict[str, Any] = json.loads(sys.stdin.read())
-        session_id = str(event["session_id"])
-    except (ValueError, KeyError) as error:
-        raise SystemExit(_bail(f"unusable hook input: {error}")) from error
-
     now = pendulum.now()
-    try:
-        since = timestamp_module.previous(session_id)
-        timestamp_module.mark(session_id, now)
-    # Knowing the gap is a nicety; knowing the time is not. Never cost a turn for it.
-    except OSError as error:
-        print(f"cortex: timestamp mark unusable: {error}", file=sys.stderr)
-        since = None
-
+    since = timestamp_module.previous(session_id)
+    timestamp_module.mark(session_id, now)
     log.write(
         "timestamp",
         session_id=session_id,
-        prompt_id=event.get("prompt_id"),
         gap_s=None if since is None else round(clock.gap_seconds(since, now), 1),
     )
-    console.out(
-        json.dumps(
-            {
-                "hookSpecificOutput": {
-                    "hookEventName": "UserPromptSubmit",
-                    "additionalContext": timestamp_module.line(now, since),
-                }
-            }
-        )
-    )
+    return timestamp_module.line(now, since)
 
 
 def _round(value: float | None) -> float | None:
     """Round a sigma for the log, passing None through."""
     return None if value is None else round(value, 2)
-
-
-def _bail(message: str) -> int:
-    """Report a hook failure without blocking the turn, and return its exit code."""
-    print(f"cortex: {message}", file=sys.stderr)
-    return 1
 
 
 if __name__ == "__main__":

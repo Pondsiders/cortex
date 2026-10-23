@@ -22,6 +22,10 @@ this size has memories that sit on nobody's nearest-neighbour list and are there
 unreachable by similarity at any threshold, forever. A uniform draw is the only probe
 with even reach.
 
+The first two run on what Jeffery says. The Lagniappe runs on everything else: the
+memory bell, notices, hand-backs, slash commands (Oct 23 2026; before that it rode on
+every prompt). Claude Code says where a prompt came from, so that's what decides.
+
 That the Lagniappe needs no network is what makes it the floor as well as the garnish.
 When the models are unreachable the cued path is abandoned and the stray goes out alone.
 """
@@ -31,10 +35,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import final
+from typing import Any, final
 
 import frontmatter
 import numpy as np
+import pendulum
 
 from cortex import clock, log, seen
 from cortex import index as index_module
@@ -42,15 +47,29 @@ from cortex.chat import Decomposer
 from cortex.config import Settings
 from cortex.embeddings import Embedder
 
-BUDGET = 9990
-"""Characters of everything the hook returns, header included. Claude Code caps a hook
-at 10,000 and does not truncate past it: the whole thing is written to a file and
-replaced with a path and a preview, so overrunning costs every memory rather than the
-last one."""
+SPOKEN = frozenset({"composer", "bridge"})
+"""Prompt origins that are Jeffery talking: his Enter at the prompt, or his phone."""
 
-HEADER = "cortex recollection hook output:"
-"""Names the hook that produced the block. Alpha receives several anonymous context
-blocks a turn and cannot otherwise tell them apart — or tell them from Jeffery."""
+UNSPOKEN = frozenset(
+    {
+        "auto-continuation",
+        "channel",
+        "coordinator",
+        "observer",
+        "observer-activity",
+        "peer",
+        "peer-send-message",
+        "plugin",
+        "projects-relay",
+        "scheduled-trigger",
+        "sdk",
+        "slack-ping",
+        "task-notification",
+        "unclassified",
+    }
+)
+"""Every other origin Claude Code names (``PromptOrigin`` in its mod types). The memory
+bell is ``scheduled-trigger``; subagent hand-backs are ``task-notification``."""
 
 TOPIC_CHARS = 12_000
 """How much of the message goes into the topic vector. The embedding endpoint shares an
@@ -88,6 +107,26 @@ class Recollected:
     """Brought by the whole message rather than a query: the most topical memory, when
     no query claimed it."""
 
+    @property
+    def label(self) -> str:
+        """What brought the memory, in a word or a query: the pane's stripe heading."""
+        if self.topical:
+            return "MOST TOPICAL"
+        if self.query is None:
+            return "RANDOM ACCESS"
+        return self.query
+
+    def record(self) -> dict[str, Any]:
+        """The memory as data, for whatever draws it."""
+        return {
+            "id": self.id,
+            "created": pendulum.instance(self.created).isoformat(),
+            "label": self.label,
+            "sigma": self.sigma,
+            "topicality": self.topicality,
+            "body": self.body,
+        }
+
     def block(self) -> str:
         """Render the memory as a ``## Memory #...`` block."""
         # ruff reads the sigma as a confusable 'o'; it's display text, not a name.
@@ -119,56 +158,31 @@ class Recollected:
 @final
 @dataclass(frozen=True)
 class Recollection:
-    """Everything one firing of the hook produced.
-
-    ``memories`` is what Alpha is actually shown. Anything that was found but did not
-    fit the budget is in ``dropped`` instead, and is still eligible later in the
-    session.
-    """
+    """Everything one recollection produced, in the order it should be shown."""
 
     memories: list[Recollected]
     queries: list[str]
     degraded: bool
-    dropped: list[int]
-    skipped: str | None
-    """Why the message wasn't decomposed, when it wasn't."""
 
-    def context(self) -> str:
-        """Render the memories as one block of context, header first.
-
-        :func:`_fit` has already decided what goes in, so everything here fits except
-        possibly a lone memory too large for the budget by itself, which is sliced.
-        """
-        if not self.memories:
-            return ""
-        blocks = [memory.block() for memory in self.memories]
-        return "\n\n".join([HEADER, *blocks])[:BUDGET]
+    def blocks(self) -> list[str]:
+        """Render each memory as its own block of context."""
+        return [memory.block() for memory in self.memories]
 
 
-def _fit(memories: list[Recollected]) -> list[Recollected]:
-    """Keep the leading memories whose blocks fit the budget together.
+def spoken(origin: str, *, command: bool) -> bool:
+    """Say whether a prompt is Jeffery talking, from where Claude Code says it came.
 
-    The list arrives in query order with the Lagniappe last, so overrunning drops the
-    stray before it drops anything the message actually asked for. A single memory too
-    large to fit at all is kept anyway and sliced when rendered, because returning
-    nothing is worse than returning the beginning of something.
+    A slash command is typed but says nothing of its own, so it counts as unspoken.
 
-    This runs before anything is marked seen. When it ran afterwards, a memory cut for
-    space was marked and never shown, and the log said it had been delivered (#1).
-
-    The header is counted first, so the rendered string is never longer than the budget.
+    Raises:
+        ValueError: If Claude Code has invented an origin since this was written.
     """
-    kept: list[Recollected] = []
-    used = len(HEADER)
-    for memory in memories:
-        size = 2 + len(memory.block())
-        if used + size > BUDGET:
-            if not kept:
-                kept.append(memory)
-            break
-        kept.append(memory)
-        used += size
-    return kept
+    if origin in SPOKEN:
+        return not command
+    if origin in UNSPOKEN:
+        return False
+    msg = f"unknown prompt origin {origin!r}; add it to SPOKEN or UNSPOKEN"
+    raise ValueError(msg)
 
 
 def _assign(scores: np.ndarray, queries: list[str]) -> dict[int, tuple[int, float]]:
@@ -225,14 +239,23 @@ def _read(settings: Settings, entry: index_module.Entry) -> str | None:
 
 
 def recollect(
-    settings: Settings, *, prompt: str, session_id: str, deadline: float = DEADLINE
+    settings: Settings,
+    *,
+    prompt: str,
+    session_id: str,
+    spoken: bool,
+    deadline: float = DEADLINE,
 ) -> Recollection:
     """Recall what a message brings to mind.
+
+    What Jeffery says is decomposed and searched, and gets no Lagniappe. Everything
+    else (the bell, notices, hand-backs, slash commands) gets the Lagniappe alone.
 
     Args:
         settings: Where the index lives and which models to ask.
         prompt: The user's message, verbatim.
         session_id: The harness's identifier for this session.
+        spoken: Whether Jeffery said it (:func:`spoken`).
         deadline: Seconds allowed for the network calls.
 
     Returns:
@@ -257,8 +280,7 @@ def recollect(
     found: list[Recollected] = []
     topic: np.ndarray | None = None
 
-    skipped = _unspoken(prompt)
-    if skipped is None:
+    if spoken:
         try:
             queries, found, topic = _cued(settings, prompt, loaded, eligible, deadline)
         # Any failure of the cued path degrades to the Lagniappe, which needs no
@@ -267,50 +289,16 @@ def recollect(
             degraded = True
             log.write("recollection.degraded", session_id=session_id, error=str(error))
 
-    for memory in found:
-        eligible[np.flatnonzero(ids == memory.id)] = False
+    if not spoken or degraded:
+        for memory in found:
+            eligible[np.flatnonzero(ids == memory.id)] = False
+        stray = _lagniappe(settings, loaded, eligible, topic)
+        if stray is not None:
+            found.append(stray)
 
-    stray = _lagniappe(settings, loaded, eligible, topic)
-    if stray is not None:
-        found.append(stray)
-
-    shown = _fit(found)
-    mask.mark([memory.id for memory in shown])
+    mask.mark([memory.id for memory in found])
     mask.save()
-    return Recollection(
-        memories=shown,
-        queries=queries,
-        degraded=degraded,
-        dropped=[memory.id for memory in found[len(shown) :]],
-        skipped=skipped,
-    )
-
-
-def _unspoken(prompt: str) -> str | None:
-    """Say why a prompt isn't worth decomposing, or None if it is.
-
-    Three kinds of prompt get the Lagniappe and nothing else, because none of them is
-    Jeffery saying something:
-
-    - A slash command, which carries no content of its own.
-    - Anything opening with ``[`` or ``<``. That's the memory bell, which opens
-      ``[cron`` by our own convention, and every message the harness writes into the
-      user's slot: ``<task-notification>``, ``<agent-message ...>`` and whatever it
-      invents next. The hook's input has no field saying who sent a prompt, so the
-      opening character is the only signal there is. Of 1,669 logged turns, 363
-      opened this way and three were Jeffery (``<bash-input>``). Blanket rather than a
-      list, so a new tag is quiet by default (#2).
-    - Nothing at all.
-
-    Returns:
-        The prompt's opening word, for the log, or None to decompose it.
-    """
-    stripped = prompt.lstrip()
-    if not stripped:
-        return "empty"
-    if stripped[0] in "/[<":
-        return stripped.split(maxsplit=1)[0][:40]
-    return None
+    return Recollection(memories=found, queries=queries, degraded=degraded)
 
 
 def _cued(
