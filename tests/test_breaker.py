@@ -118,5 +118,8 @@ def test_the_switch_from_the_command_line() -> None:
         in runner.invoke(cortex, ["off", "MOSS has the GPU"]).output
     )
     assert runner.invoke(cortex, ["status"]).output.startswith("cortex: off since")
+    status = json.loads(runner.invoke(cortex, ["status", "--json"]).output)
+    assert status["reason"] == "MOSS has the GPU"
     assert runner.invoke(cortex, ["on"]).output == "on\n"
     assert breaker.state() is None
+    assert runner.invoke(cortex, ["status", "--json"]).output == "null\n"

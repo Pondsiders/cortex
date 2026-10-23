@@ -365,16 +365,18 @@ def _answer(
             {
                 "context": context,
                 "memories": memories,
-                "off": None
-                if off is None
-                else {
-                    "at": pendulum.instance(off.at).isoformat(),
-                    "reason": off.reason,
-                },
+                "off": _off_record(off),
             },
             ensure_ascii=False,
         )
     )
+
+
+def _off_record(off: breaker.Off | None) -> dict[str, str] | None:
+    """The breaker's state as data: None when on."""
+    if off is None:
+        return None
+    return {"at": pendulum.instance(off.at).isoformat(), "reason": off.reason}
 
 
 @cortex.command("on")
@@ -392,10 +394,16 @@ def switch_off(reason: str) -> None:
 
 
 @cortex.command()
-def status() -> None:
+@click.option(
+    "--json", "as_json", is_flag=True, help="As JSON: null, or at and reason."
+)
+def status(as_json: bool) -> None:
     """Say whether Cortex is on, and if it's off, since when and why."""
     off = breaker.state()
-    console.out("on" if off is None else off.line())
+    if as_json:
+        console.out(json.dumps(_off_record(off)))
+    else:
+        console.out("on" if off is None else off.line())
 
 
 def _timestamp(session_id: str) -> str:
