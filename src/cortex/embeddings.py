@@ -66,7 +66,7 @@ class Embedder:
             timeout: Seconds to wait for one request. The default suits a reindex, which
                 has all night; a caller on a deadline should pass its own.
             max_retries: Attempts after the first. Zero for callers that would rather
-                fail now and degrade than spend their budget hoping.
+                fail now than spend their budget hoping.
         """
         self._client: OpenAI = OpenAI(
             base_url=config.embedding_endpoint,

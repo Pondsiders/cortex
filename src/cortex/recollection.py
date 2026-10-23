@@ -5,7 +5,7 @@ thing. It fires on every message, nobody chose it, and what it surfaces is the l
 authoritative thing in the window rather than the most. The plumbing is the same
 embeddings and the same cosine; the shape is the opposite.
 
-Three paths produce a result set, and only the first two can fail:
+Three paths produce a result set:
 
 *Cued.* The chat model decomposes the message into query strings, all of them are
 embedded in one pass, and each takes the highest-scoring memory this session has not
@@ -26,8 +26,9 @@ The first two run on what Jeffery says. The Lagniappe runs on everything else: t
 memory bell, notices, hand-backs, slash commands (Oct 23 2026; before that it rode on
 every prompt). Claude Code says where a prompt came from, so that's what decides.
 
-That the Lagniappe needs no network is what makes it the floor as well as the garnish.
-When the models are unreachable the cued path is abandoned and the stray goes out alone.
+When a model can't be reached, recollection raises. It used to fall back to the
+Lagniappe, and in five weeks of logs the only thing that fallback ever caught was a bug
+of our own, which it hid (Oct 23 2026).
 """
 
 from __future__ import annotations
@@ -41,7 +42,7 @@ import frontmatter
 import numpy as np
 import pendulum
 
-from cortex import clock, log, seen
+from cortex import clock, seen
 from cortex import index as index_module
 from cortex.chat import Decomposer
 from cortex.config import Settings
@@ -102,7 +103,8 @@ class Recollected:
     on topic; negative is about something else. It differs from ``sigma`` on purpose:
     ``sigma`` grades the memory against the chat model's query, this grades it against
     what Jeffery actually said, so a high ``sigma`` with a low topicality is a query
-    that wandered off. Random memories get one too."""
+    that wandered off. Random memories don't
+    have one: they ride on prompts that are never embedded."""
     topical: bool = False
     """Brought by the whole message rather than a query: the most topical memory, when
     no query claimed it."""
@@ -162,7 +164,6 @@ class Recollection:
 
     memories: list[Recollected]
     queries: list[str]
-    degraded: bool
 
     def blocks(self) -> list[str]:
         """Render each memory as its own block of context."""
@@ -275,30 +276,15 @@ def recollect(
     mask = seen.Seen.load(session_id, int(ids.max(initial=0)))
     eligible = mask.filter(ids)
 
-    queries: list[str] = []
-    degraded = False
-    found: list[Recollected] = []
-    topic: np.ndarray | None = None
-
     if spoken:
-        try:
-            queries, found, topic = _cued(settings, prompt, loaded, eligible, deadline)
-        # Any failure of the cued path degrades to the Lagniappe, which needs no
-        # network of its own.
-        except Exception as error:
-            degraded = True
-            log.write("recollection.degraded", session_id=session_id, error=str(error))
-
-    if not spoken or degraded:
-        for memory in found:
-            eligible[np.flatnonzero(ids == memory.id)] = False
-        stray = _lagniappe(settings, loaded, eligible, topic)
-        if stray is not None:
-            found.append(stray)
+        queries, found = _cued(settings, prompt, loaded, eligible, deadline)
+    else:
+        stray = _lagniappe(settings, loaded, eligible)
+        queries, found = [], [] if stray is None else [stray]
 
     mask.mark([memory.id for memory in found])
     mask.save()
-    return Recollection(memories=found, queries=queries, degraded=degraded)
+    return Recollection(memories=found, queries=queries)
 
 
 def _cued(
@@ -307,15 +293,14 @@ def _cued(
     loaded: index_module.Index,
     eligible: np.ndarray,
     deadline: float,
-) -> tuple[list[str], list[Recollected], np.ndarray | None]:
+) -> tuple[list[str], list[Recollected]]:
     """Run the cued path: decompose, embed, and take the best row per query.
 
     The whole message is embedded alongside the queries, in the same request, as the
     topic vector. It retrieves nothing; it only measures every memory's topicality.
 
     Returns:
-        The queries, the memories they found, and every row's topicality in standard
-        deviations (None if the topic vector has no spread to measure against).
+        The queries and the memories they found.
     """
     queries = Decomposer(settings, timeout=deadline / 2).decompose(prompt)
 
@@ -334,7 +319,7 @@ def _cued(
     topic = (scores[-1] - baseline[-1]) / deviation[-1] if deviation[-1] else None
     scores = scores[:-1]
     if not queries:
-        return [], [], topic
+        return [], []
     scores[:, ~eligible] = -np.inf
 
     found: list[Recollected] = []
@@ -365,7 +350,7 @@ def _cued(
     topical = _most_topical(settings, loaded, eligible, topic, assigned)
     if topical is not None:
         found.append(topical)
-    return queries, found, topic
+    return queries, found
 
 
 def _most_topical(
@@ -405,15 +390,13 @@ def _lagniappe(
     settings: Settings,
     loaded: index_module.Index,
     eligible: np.ndarray,
-    topic: np.ndarray | None = None,
 ) -> Recollected | None:
     """Draw one eligible memory uniformly at random.
 
     Uniform on purpose. Weighting the draw — towards the old, the isolated, the
     high-scoring — would smuggle in a theory about which memories deserve resurfacing,
-    and nobody has one. Its topicality is measured after the draw and reported, never
-    used to choose: it's there so a stray that happens to fit can be called luck out
-    loud, and one that doesn't can be enjoyed as weather.
+    and nobody has one. It carries no topicality: it only rides on prompts nobody
+    said, and those are never embedded.
     """
     rows = np.flatnonzero(eligible)
     if not len(rows):
@@ -429,5 +412,4 @@ def _lagniappe(
         body=body,
         query=None,
         score=None,
-        topicality=None if topic is None else float(topic[row]),
     )

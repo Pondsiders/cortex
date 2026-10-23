@@ -73,14 +73,14 @@ def _one_cued(settings: Settings, ident: int):
 
     def cued(
         *_: object,
-    ) -> tuple[list[str], list[recollection.Recollected], np.ndarray | None]:
+    ) -> tuple[list[str], list[recollection.Recollected]]:
         loaded = index.Index.load(settings.index_root)
         assert loaded is not None
         entry = next(e for e in loaded.entries if e.id == ident)
         found = recollection.Recollected(
             id=entry.id, created=entry.created, body="cued", query="q", score=0.5
         )
-        return ["q"], [found], None
+        return ["q"], [found]
 
     return cued
 
@@ -117,26 +117,8 @@ def test_what_nobody_said_gets_the_stray_and_nothing_else(
     )
 
     assert result.queries == []
-    assert not result.degraded
     assert [m.id for m in result.memories] == [1]
     assert not _eligible(1)
-
-
-def test_when_the_models_are_down_the_stray_holds_the_floor(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    settings = _corpus(tmp_path, {1: "the stray"})
-
-    def down(*_: object) -> None:
-        raise ConnectionError("gargamel is napping")
-
-    monkeypatch.setattr(recollection, "_cued", down)
-    result = recollection.recollect(
-        settings, prompt="Morning, little duck.", session_id=SESSION, spoken=True
-    )
-
-    assert result.degraded
-    assert [m.id for m in result.memories] == [1]
 
 
 @pytest.mark.parametrize(

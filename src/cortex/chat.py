@@ -5,8 +5,8 @@ strings or an error — there is no salvage parsing of prose that was supposed t
 
 Nothing here retries. A recollection has a hard deadline it shares with the embedding
 call and the harness's own timeout, and a retry inside that budget buys one more chance
-at the cost of the whole turn's enrichment. Failing immediately lets the caller fall
-back to the Lagniappe, which needs no network at all.
+at the cost of the whole turn's enrichment. Failing immediately puts the traceback in
+front of Alpha while the turn is still fresh.
 
 The same message decomposes differently every time, and that is the point. Sampling is
 left at the server's defaults, and each query takes the single best of twenty thousand

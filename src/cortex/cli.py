@@ -304,7 +304,6 @@ def hook_prompt() -> None:
         "recollection",
         session_id=session_id,
         ms=elapsed,
-        degraded=result.degraded,
         prompt=prompt,
         queries=[
             {
