@@ -41,6 +41,7 @@ from typing import Any, final
 import frontmatter
 import numpy as np
 import pendulum
+from openai import APIConnectionError
 
 from cortex import clock, seen
 from cortex import index as index_module
@@ -80,6 +81,19 @@ take the queries down with it; this is roughly four thousand tokens."""
 DEADLINE = 20.0
 """Seconds for the two network calls together. Claude Code allows the hook 30 and
 discards the output of one that overruns, so the budget stops short of it."""
+
+
+class Unreachable(Exception):
+    """A model recollection needs didn't answer: refused, unroutable or timed out.
+
+    Only absence. A model that answers wrongly raises its own error, because that's a
+    bug and the breaker would hide it.
+    """
+
+    def __init__(self, role: str, model: str, error: APIConnectionError) -> None:
+        """Name the model that went missing and how."""
+        self.reason: str = f"{role} model {model} unreachable: {type(error).__name__}"
+        super().__init__(self.reason)
 
 
 @final
@@ -302,14 +316,17 @@ def _cued(
     Returns:
         The queries and the memories they found.
     """
-    queries = Decomposer(settings, timeout=deadline / 2).decompose(prompt)
+    try:
+        queries = Decomposer(settings, timeout=deadline / 2).decompose(prompt)
+    except APIConnectionError as error:
+        raise Unreachable("chat", settings.chat_model, error) from error
 
     embedder = Embedder(settings, timeout=deadline / 2, max_retries=0)
-    vectors = index_module.normalize(
-        np.asarray(
-            embedder.embed_queries([*queries, prompt[:TOPIC_CHARS]]), dtype=np.float32
-        )
-    )
+    try:
+        embedded = embedder.embed_queries([*queries, prompt[:TOPIC_CHARS]])
+    except APIConnectionError as error:
+        raise Unreachable("embedding", settings.embedding_model, error) from error
+    vectors = index_module.normalize(np.asarray(embedded, dtype=np.float32))
 
     scores = vectors @ np.asarray(loaded.vectors).T
     # Each row's scale is taken over the whole corpus before anything is masked, the
