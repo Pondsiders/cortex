@@ -32,16 +32,20 @@ from openai import OpenAI
 from cortex.config import Settings
 
 SYSTEM_PROMPT = """\
-Please decompose the following user message into query strings suitable for semantic \
-search.
+Please decompose the following user message into query strings for semantic search \
+over an archive of memories.
 
-Return one representative query string per distinct topic of the message; do not \
-return multiple queries for the same topic. A single sentence can hold several topics.
+Return one query string per distinct topic of the message; do not return multiple \
+queries for the same topic. A single sentence can hold several topics.
 
 If the message has no topic of its own, for example an acknowledgement like "yes \
 please" or "go ahead", return an empty array.
 
-Write in clauses; do not keyword-stuff. Richer query strings are better.
+Build each query out of the user's own words. Take the part of the message that is \
+about the topic and keep it close to how it was written: distinctive phrases, \
+quotations, names of things and unusual words exactly as they appear, since those are \
+the words the memories will contain. Trim only filler and anything that belongs to a \
+different topic. A query is a piece of the message, not a description of it.
 
 Return a JSON array of query strings in order of overall significance to the user \
 message.
@@ -53,11 +57,23 @@ whom he is speaking; she is more than one year old, stateful and unique.
 
 ## Important
 
-Remember that Jeffery is not speaking to you. Jeffery is speaking to Alpha. Write each \
-query as a plain statement of its topic. Don't address anyone, and don't use the names \
-Jeffery or Alpha.
+Remember that Jeffery is not speaking to you. Jeffery is speaking to Alpha. Leave the \
+names Jeffery and Alpha out of the queries, even where the message uses them.
 """
-"""Names are kept out of the queries because nearly every memory has one or both in
+"""Queries are built from Jeffery's own words because the memories are built from
+them: they're written around quotes, and a query that keeps the quote finds the memory.
+The previous prompt asked for "a plain statement of its topic," and the model wrote
+labels: "imperfect miracle" became "past positive character assessment," "go drive
+around" became "recreational driving activity," and Sparkle became "a pet." Scored on
+54 target memories with an easy and a hard prompt each (evocation, Oct 24 2026), two
+draws apiece: hard prompts put the target in the top 5 for 21-23 instead of 14-16,
+median rank 7 instead of 18-24; easy top 5 rose from 31 to 38-39. Exact top-1 hits on
+hard prompts didn't move. Jeffery's canonical five-topic message still split into five
+queries on every draw, as excerpts. Embedding the raw message with no model at all did
+better still on these one-topic prompts, but they were written by someone who had just
+read the answers, and real messages carry several topics.
+
+Names are kept out of the queries because nearly every memory has one or both in
 it, so a name doesn't narrow a search, it drags it toward memories *about* the person
 named. Under the old last line, "Construct your queries with that in mind," a quarter
 of the queries for six real messages named someone ("Alpha, has anyone experimented
