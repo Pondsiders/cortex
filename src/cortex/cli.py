@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import sys
@@ -277,7 +278,10 @@ def hook_prompt() -> None:
 
     Reads one JSON object from standard input, written by the claude-code-cortex mod:
     ``text``, ``origin`` (Claude Code's ``origin.kind``), ``command`` (the slash
-    command's name, or null) and ``session_id``. Prints one back: ``context``, the
+    command's name, or null), ``session_id`` and ``attachments``: every item attached
+    to the prompt, each with ``type``, ``media_type``, ``filename``, ``data`` (the
+    bytes, base64, or null) and ``missing`` (why there are no bytes, or null). Nothing
+    uses the attachments yet beyond logging them. Prints one back: ``context``, the
     blocks the model reads beside the prompt (the timestamp line, then one per memory),
     ``memories``, the same memories as data for the Recollections pane, and ``off``,
     the breaker's state (null when Cortex is on).
@@ -293,6 +297,24 @@ def hook_prompt() -> None:
     origin = str(packet["origin"])
     command: str | None = packet["command"]
     session_id = str(packet["session_id"])
+    attachments: list[dict[str, Any]] = packet["attachments"]
+    if attachments:
+        log.write(
+            "attachments",
+            session_id=session_id,
+            items=[
+                {
+                    "type": a["type"],
+                    "media_type": a["media_type"],
+                    "filename": a["filename"],
+                    "bytes": None
+                    if a["data"] is None
+                    else len(base64.b64decode(a["data"])),
+                    "missing": a["missing"],
+                }
+                for a in attachments
+            ],
+        )
 
     stamp = _timestamp(session_id)
     spoken = recollection_module.spoken(origin, command=command is not None)

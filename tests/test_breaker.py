@@ -98,6 +98,7 @@ def test_while_off_a_prompt_gets_the_time_and_the_reminder_and_nothing_else() ->
         "origin": "composer",
         "command": None,
         "session_id": "test-session",
+        "attachments": [],
     }
     result = CliRunner().invoke(cortex, ["hook", "prompt"], input=json.dumps(packet))
 
