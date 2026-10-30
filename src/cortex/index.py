@@ -135,6 +135,8 @@ class Entry:
     size: int | None = None
     """The file's modification time and size when it was last read. None in an index
     written before these were recorded, so the next sync reads everything once."""
+    images: tuple[str, ...] = ()
+    """The pictures the memory names, so finding a picture's memories opens no files."""
 
 
 def _entry_from_json(data: dict[str, object]) -> Entry:
@@ -149,11 +151,16 @@ def _entry_from_json(data: dict[str, object]) -> Entry:
         content_hash=str(data["content_hash"]),
         mtime_ns=_optional_int(data.get("mtime_ns")),
         size=_optional_int(data.get("size")),
+        images=tuple(str(image) for image in _list(data.get("images"))),
     )
 
 
 def _optional_int(value: object) -> int | None:
     return None if value is None else int(str(value))
+
+
+def _list(value: object) -> list[object]:
+    return value if isinstance(value, list) else []
 
 
 @final
@@ -266,6 +273,7 @@ def write(
                             "content_hash": entry.content_hash,
                             "mtime_ns": entry.mtime_ns,
                             "size": entry.size,
+                            "images": list(entry.images),
                         },
                         ensure_ascii=False,
                     )

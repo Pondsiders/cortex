@@ -17,6 +17,7 @@ from tqdm import tqdm
 from cortex import breaker, clock, console, log
 from cortex import index as index_module
 from cortex import memories as memories_module
+from cortex import pictures as pictures_module
 from cortex import recollection as recollection_module
 from cortex import search as search_module
 from cortex import sync as sync_module
@@ -82,7 +83,14 @@ def cortex() -> None:
 
 
 @cortex.command()
-def store() -> None:
+@click.option(
+    "--image",
+    "images",
+    multiple=True,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="A picture to keep with the memory. Repeat for more.",
+)
+def store(images: tuple[Path, ...]) -> None:
     """Store a memory, reading its body from standard input.
 
     The memory file is written first and is the thing that matters; the index is then
@@ -98,7 +106,13 @@ def store() -> None:
     folder = settings.memories_root / clock.pondside_day(created)
     folder.mkdir(parents=True, exist_ok=True)
 
-    content = f"---\ncreated: {created.isoformat()}\n---\n\n{body.strip()}\n"
+    try:
+        kept = [pictures_module.keep(settings, image) for image in images]
+    except pictures_module.PictureError as error:
+        raise click.ClickException(str(error)) from error
+    listed = "".join(f"  - {name}\n" for name in dict.fromkeys(kept))
+    named = f"images:\n{listed}" if listed else ""
+    content = f"---\ncreated: {created.isoformat()}\n{named}---\n\n{body.strip()}\n"
     path = _write_next(folder, settings.memories_root, content)
     console.out(str(path.relative_to(settings.cortex_root)))
 
@@ -118,6 +132,15 @@ def store() -> None:
         _say("index busy; the next sync will pick this memory up")
         return
     _say(f"index: {result.total} memories, {result.embedded} embedded")
+    _say_pictures(result)
+
+
+def _say_pictures(result: sync_module.Result) -> None:
+    """Report the shelf, if there's anything on it or anything wrong with it."""
+    if result.pictures or result.pictures_missed:
+        _say(f"shelf: {result.pictures} pictures, {result.pictures_embedded} embedded")
+    if result.pictures_missed:
+        _say(f"shelf: left for the next sync, {result.pictures_missed}")
 
 
 def _write_next(folder: Path, memories_root: Path, content: str) -> Path:
@@ -151,7 +174,10 @@ def _print_hits(results: search_module.Results) -> None:
         # ruff reads the sigma as a confusable 'o'; it's display text, not a name.
         sigma = f"{hit.sigma:+.1f}σ"  # noqa: RUF001
         console.out(f"\n#{hit.id}  {hit.score:.4f}  {sigma}  {when}")
-        console.out(f"{hit.path}\n")
+        console.out(f"{hit.path}")
+        for image in hit.images:
+            console.out(f"picture: {image}")
+        console.out("")
         console.out(hit.body)
 
 
@@ -280,8 +306,8 @@ def hook_prompt() -> None:
     ``text``, ``origin`` (Claude Code's ``origin.kind``), ``command`` (the slash
     command's name, or null), ``session_id`` and ``attachments``: every item attached
     to the prompt, each with ``type``, ``media_type``, ``filename``, ``data`` (the
-    bytes, base64, or null) and ``missing`` (why there are no bytes, or null). Nothing
-    uses the attachments yet beyond logging them. Prints one back: ``context``, the
+    bytes, base64, or null) and ``missing`` (why there are no bytes, or null). The
+    images among them are looked up on the shelf. Prints one back: ``context``, the
     blocks the model reads beside the prompt (the timestamp line, then one per memory),
     ``memories``, the same memories as data for the Recollections pane, and ``off``,
     the breaker's state (null when Cortex is on).
@@ -327,7 +353,15 @@ def hook_prompt() -> None:
     settings = Settings()  # pyright: ignore[reportCallIssue]
     try:
         result = recollection_module.recollect(
-            settings, prompt=prompt, session_id=session_id, spoken=spoken
+            settings,
+            prompt=prompt,
+            session_id=session_id,
+            spoken=spoken,
+            images=[
+                str(a["data"])
+                for a in attachments
+                if a["type"] == "image" and a["data"] is not None
+            ],
         )
     except recollection_module.Unreachable as error:
         off = breaker.trip(error.reason)
@@ -356,18 +390,28 @@ def hook_prompt() -> None:
         unanswered=[
             q for q in result.queries if q not in {m.query for m in result.memories}
         ],
+        pictured=[
+            {"id": m.id, "score": round(m.score or 0.0, 4), "sigma": _round(m.sigma)}
+            for m in result.memories
+            if m.pictured
+        ],
         topical=next((m.id for m in result.memories if m.topical), None),
         topical_topicality=next(
             (_round(m.topicality) for m in result.memories if m.topical), None
         ),
         lagniappe=next(
-            (m.id for m in result.memories if m.query is None and not m.topical), None
+            (
+                m.id
+                for m in result.memories
+                if m.query is None and not m.topical and not m.pictured
+            ),
+            None,
         ),
         lagniappe_topicality=next(
             (
                 _round(m.topicality)
                 for m in result.memories
-                if m.query is None and not m.topical
+                if m.query is None and not m.topical and not m.pictured
             ),
             None,
         ),

@@ -12,11 +12,22 @@ import tempfile
 from collections.abc import Iterator
 from pathlib import Path
 
+import httpx
 import numpy as np
 import pendulum
 import pytest
+from openai import APIConnectionError
 
-from cortex import clock, embeddings, index, memories, recollection, seen, sync
+from cortex import (
+    clock,
+    embeddings,
+    index,
+    memories,
+    pictures,
+    recollection,
+    seen,
+    sync,
+)
 from cortex.config import Settings
 
 LA = "America/Los_Angeles"
@@ -277,3 +288,101 @@ def test_writing_the_index_leaves_no_staging_files_behind(tmp_path: Path) -> Non
         index.MANIFEST,
         index.VECTORS,
     ]
+
+
+def test_a_memory_keeps_a_picture_and_sync_puts_it_on_the_shelf_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "memory"
+    day = root / "memories" / "2026-10-30"
+    day.mkdir(parents=True)
+    settings = Settings(
+        cortex_root=root,
+        index_dir=tmp_path / "index",
+        chat_model="unused",
+        chat_endpoint="unused",
+        chat_api_key="unused",
+        embedding_model="unused",
+        embedding_endpoint="unused",
+        embedding_api_key="unused",
+    )
+    source = tmp_path / "Break_time.PNG"
+    source.write_bytes(b"pretend this is a picture")
+
+    name = pictures.keep(settings, source)
+    assert pictures.keep(settings, source) == name
+    assert name.endswith(".png")
+    assert [p.name for p in settings.images_root.iterdir()] == [name]
+
+    for ident in (1, 2):
+        (day / f"{ident}.md").write_text(
+            "---\ncreated: 2026-10-30T10:00:00-07:00\n"
+            f"images:\n  - {name}\n---\n\nbody {ident}\n",
+            encoding="utf-8",
+        )
+
+    def fake_text(
+        _self: object, texts: list[str]
+    ) -> Iterator[embeddings.EmbeddedBatch]:
+        yield embeddings.EmbeddedBatch(
+            indices=list(range(len(texts))), vectors=[[1.0, 0.0]] * len(texts)
+        )
+
+    monkeypatch.setattr(embeddings.Embedder, "embed_documents", fake_text)
+    monkeypatch.setattr(embeddings.Embedder, "dimensions", lambda _self: 2)
+    asked: list[int] = []
+
+    def fake_eyes(_settings: Settings, encoded: list[str], **_k: object) -> np.ndarray:
+        asked.append(len(encoded))
+        return np.asarray([[1.0, 0.0]] * len(encoded), dtype=np.float32)
+
+    monkeypatch.setattr(pictures, "embed", fake_eyes)
+
+    assert sync.sync(settings).pictures == 1
+    assert asked == [1]
+    assert sync.sync(settings).pictures_embedded == 0
+    assert asked == [1]
+
+    (day / "2.md").write_text(
+        "---\ncreated: 2026-10-30T10:00:00-07:00\nforgotten: true\n"
+        f"images:\n  - {name}\n---\n\nbody 2\n",
+        encoding="utf-8",
+    )
+    assert sync.sync(settings).pictures == 1
+    (day / "1.md").unlink()
+    (day / "3.md").write_text(
+        "---\ncreated: 2026-10-30T10:00:00-07:00\n---\n\nno pictures\n",
+        encoding="utf-8",
+    )
+    assert sync.sync(settings).pictures == 0
+
+
+def test_goldeneye_away_leaves_the_memory_safe_and_the_next_sync_asks_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = Settings(
+        cortex_root=tmp_path,
+        index_dir=tmp_path / "index",
+        chat_model="unused",
+        chat_endpoint="unused",
+        chat_api_key="unused",
+        embedding_model="unused",
+        embedding_endpoint="unused",
+        embedding_api_key="unused",
+    )
+    source = tmp_path / "a.png"
+    source.write_bytes(b"x")
+    name = pictures.keep(settings, source)
+
+    def gone(*_a: object, **_k: object) -> np.ndarray:
+        raise APIConnectionError(request=httpx.Request("POST", "http://x"))
+
+    monkeypatch.setattr(pictures, "embed", gone)
+    result = pictures.sync(settings, [name], force=False)
+    assert result.total == 0
+    assert result.missed is not None
+
+    monkeypatch.setattr(
+        pictures, "embed", lambda *_a, **_k: np.eye(1, 4, dtype=np.float32)
+    )
+    assert pictures.sync(settings, [name], force=False).embedded == 1

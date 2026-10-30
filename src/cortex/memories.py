@@ -1,8 +1,10 @@
 """Reading memory Markdown files off disk.
 
 A memory is ``$CORTEX_ROOT/memories/YYYY-MM-DD/<id>.md``: YAML frontmatter carrying
-``created`` and an optional ``forgotten``, then the body. Attachments live in a
-sidecar ``<id>/`` folder and are referenced from the body by wikilink embed syntax.
+``created``, an optional ``forgotten`` and an optional ``images`` list, then the body.
+The names in ``images`` are files in ``$CORTEX_ROOT/images`` (:mod:`cortex.pictures`).
+Older attachments live in a sidecar ``<id>/`` folder and are referenced from the body by
+wikilink embed syntax.
 
 The disk is authoritative. Everything here reads; nothing here writes.
 """
@@ -38,6 +40,7 @@ class Memory:
     body: str
     forgotten: bool
     content_hash: str
+    images: tuple[str, ...] = ()
 
 
 def _hash(data: bytes) -> str:
@@ -95,6 +98,11 @@ def read(path: Path, root: Path) -> Memory:
 
     forgotten = bool(post.metadata.get("forgotten", False))
 
+    images = post.metadata.get("images", [])
+    if not isinstance(images, list):
+        msg = f"{path}: 'images' is not a list: {images!r}"
+        raise MemoryError_(msg)
+
     return Memory(
         id=int(match.group(1)),
         path=str(path.relative_to(root)),
@@ -102,6 +110,7 @@ def read(path: Path, root: Path) -> Memory:
         body=post.content,
         forgotten=forgotten,
         content_hash=_hash(data),
+        images=tuple(str(image) for image in images),
     )
 
 

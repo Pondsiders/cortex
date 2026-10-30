@@ -10,14 +10,18 @@ path is either skipped or replaced.
 from __future__ import annotations
 
 import tempfile
+from dataclasses import replace
 from pathlib import Path
 
+import httpx
 import numpy as np
 import pendulum
 import pytest
+from openai import APIConnectionError
 
 from cortex import index, recollection, seen
 from cortex.config import Settings
+from cortex.pictures import Shelf
 
 SESSION = "test-session"
 
@@ -161,6 +165,7 @@ def test_a_memory_as_data_carries_what_the_pane_draws() -> None:
         "sigma": 5.1,
         "topicality": 0.8,
         "body": "b",
+        "images": [],
     }
     assert stray.record()["label"] == "RANDOM ACCESS"
     assert topical.record()["label"] == "MOST TOPICAL"
@@ -197,3 +202,100 @@ def test_the_most_topical_memory_says_where_it_came_from() -> None:
     block = topical.block()
     assert "- most topical (whole message)\n- topicality: +4.5σ" in block  # noqa: RUF001
     assert "random memory" not in block
+
+
+def _shelved(root: Path, pictures: dict[int, str]) -> Settings:
+    """Corpus where each memory keeps the named picture, on a shelf of unit axes."""
+    settings = _corpus(root, {ident: f"memory {ident}" for ident in pictures})
+    loaded = index.Index.load(root / "index")
+    assert loaded is not None
+    entries = [replace(entry, images=(pictures[entry.id],)) for entry in loaded.entries]
+    index.write(root / "index", "unused", entries, np.asarray(loaded.vectors))
+    names = sorted(set(pictures.values()))
+    Shelf(names, np.eye(len(names), 8, dtype=np.float32), "goldeneye").save(
+        root / "index"
+    )
+    return settings
+
+
+def _sees(monkeypatch: pytest.MonkeyPatch, *vectors: list[float]) -> None:
+    """Make Goldeneye answer with these vectors."""
+    answer = np.zeros((len(vectors), 8), dtype=np.float32)
+    for row, vector in enumerate(vectors):
+        answer[row, : len(vector)] = vector
+    monkeypatch.setattr(recollection, "embed_pictures", lambda *_a, **_k: answer)
+
+
+def test_a_picture_brings_back_its_nearest_memory_first_with_both_numbers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = _shelved(tmp_path, {1: "a.png", 2: "b.png", 3: "c.png"})
+    _sees(monkeypatch, [0.1, 0.9, 0.0])
+
+    result = recollection.recollect(
+        settings, prompt="", session_id=SESSION, spoken=False, images=["x"]
+    )
+
+    first = result.memories[0]
+    assert first.id == 2
+    assert first.pictured
+    assert first.images == (str(settings.images_root / "b.png"),)
+    block = first.block()
+    assert "attached picture: cosine 0.900" in block
+    assert "σ" in block  # noqa: RUF001
+    assert "- picture: " in block
+
+
+def test_a_seen_picture_memory_gives_way_to_the_next_nearest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = _shelved(tmp_path, {1: "a.png", 2: "b.png"})
+    _sees(monkeypatch, [0.9, 0.1])
+    monkeypatch.setattr(recollection, "_lagniappe", lambda *_a: None)
+
+    ids = [
+        next(
+            m.id
+            for m in recollection.recollect(
+                settings, prompt="", session_id=SESSION, spoken=False, images=["x"]
+            ).memories
+            if m.pictured
+        )
+        for _ in range(2)
+    ]
+
+    assert ids == [1, 2]
+
+
+def test_goldeneye_failing_leaves_a_note_and_the_rest_of_recollection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = _shelved(tmp_path, {1: "a.png", 2: "b.png"})
+
+    def gone(*_a: object, **_k: object) -> np.ndarray:
+        raise APIConnectionError(request=httpx.Request("POST", "http://x"))
+
+    monkeypatch.setattr(recollection, "embed_pictures", gone)
+
+    result = recollection.recollect(
+        settings, prompt="", session_id=SESSION, spoken=False, images=["x"]
+    )
+
+    assert "Goldeneye failed" in result.blocks()[0]
+    assert len(result.memories) == 1
+    assert not result.memories[0].pictured
+
+
+def test_no_shelf_means_goldeneye_is_never_asked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = _corpus(tmp_path, {1: "one"})
+
+    def boom(*_a: object, **_k: object) -> np.ndarray:
+        raise AssertionError("asked Goldeneye about an empty shelf")
+
+    monkeypatch.setattr(recollection, "embed_pictures", boom)
+
+    recollection.recollect(
+        settings, prompt="", session_id=SESSION, spoken=False, images=["x"]
+    )

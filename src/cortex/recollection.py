@@ -26,9 +26,15 @@ The first two run on what Jeffery says. The Lagniappe runs on everything else: t
 memory bell, notices, hand-backs, slash commands (Oct 23 2026; before that it rode on
 every prompt). Claude Code says where a prompt came from, so that's what decides.
 
-When a model can't be reached, recollection raises. It used to fall back to the
+*Pictured.* Each attached picture brings back the newest unseen memory of the nearest
+picture on the shelf (:mod:`cortex.pictures`), ahead of everything else. There's always
+a nearest, so it comes with its cosine and z-score, and whether that's this picture,
+its family or a stranger is for the reader to say (Oct 30 2026).
+
+When a text model can't be reached, recollection raises. It used to fall back to the
 Lagniappe, and in five weeks of logs the only thing that fallback ever caught was a bug
-of our own, which it hid (Oct 23 2026).
+of our own, which it hid (Oct 23 2026). Goldeneye is different: losing it costs one
+block and not the rest of memory, so that failure goes in a note Alpha reads instead.
 """
 
 from __future__ import annotations
@@ -41,13 +47,15 @@ from typing import Any, final
 import frontmatter
 import numpy as np
 import pendulum
-from openai import APIConnectionError
+from openai import APIConnectionError, APIError
 
 from cortex import clock, seen
 from cortex import index as index_module
 from cortex.chat import Decomposer
 from cortex.config import Settings
 from cortex.embeddings import Embedder
+from cortex.pictures import Shelf
+from cortex.pictures import embed as embed_pictures
 
 SPOKEN = frozenset({"composer", "bridge"})
 """Prompt origins that are Jeffery talking: his Enter at the prompt, or his phone."""
@@ -79,8 +87,10 @@ TOPIC_CHARS = 12_000
 take the queries down with it; this is roughly four thousand tokens."""
 
 DEADLINE = 20.0
-"""Seconds for the two network calls together. Claude Code allows the hook 30 and
-discards the output of one that overruns, so the budget stops short of it."""
+"""Seconds for the two text-model calls together. The mod gives the whole hook 60."""
+
+PICTURE_DEADLINE = 30.0
+"""Seconds for Goldeneye, which takes about 11 to wake when nothing has asked it yet."""
 
 
 class Unreachable(Exception):
@@ -122,10 +132,17 @@ class Recollected:
     topical: bool = False
     """Brought by the whole message rather than a query: the most topical memory, when
     no query claimed it."""
+    pictured: bool = False
+    """Brought by an attached picture, with ``score`` and ``sigma`` measured against
+    the shelf."""
+    images: tuple[str, ...] = ()
+    """Full paths of the pictures this memory keeps, however it was brought."""
 
     @property
     def label(self) -> str:
         """What brought the memory, in a word or a query: the pane's stripe heading."""
+        if self.pictured:
+            return "PICTURE"
         if self.topical:
             return "MOST TOPICAL"
         if self.query is None:
@@ -141,12 +158,16 @@ class Recollected:
             "sigma": self.sigma,
             "topicality": self.topicality,
             "body": self.body,
+            "images": list(self.images),
         }
 
     def block(self) -> str:
         """Render the memory as a ``## Memory #...`` block."""
         # ruff reads the sigma as a confusable 'o'; it's display text, not a name.
-        if self.topical:
+        if self.pictured and self.score is not None:
+            scale = "" if self.sigma is None else f" ({self.sigma:+.1f}σ)"  # noqa: RUF001
+            provenance = [f"- attached picture: cosine {self.score:.3f}{scale}"]
+        elif self.topical:
             provenance = ["- most topical (whole message)"]
         elif self.query is None or self.score is None:
             provenance = ["- random memory"]
@@ -158,6 +179,7 @@ class Recollected:
             ]
         if self.topicality is not None:
             provenance.append(f"- topicality: {self.topicality:+.1f}σ")  # noqa: RUF001
+        provenance.extend(f"- picture: {path}" for path in self.images)
         return "\n".join(
             [
                 f"## Memory #{self.id}",
@@ -178,10 +200,12 @@ class Recollection:
 
     memories: list[Recollected]
     queries: list[str]
+    notes: tuple[str, ...] = ()
+    """Things Alpha should know went wrong, each read as a block of its own."""
 
     def blocks(self) -> list[str]:
-        """Render each memory as its own block of context."""
-        return [memory.block() for memory in self.memories]
+        """Render each memory as its own block of context, after any notes."""
+        return [*self.notes, *(memory.block() for memory in self.memories)]
 
 
 def spoken(origin: str, *, command: bool) -> bool:
@@ -253,12 +277,18 @@ def _read(settings: Settings, entry: index_module.Entry) -> str | None:
     return frontmatter.loads(path.read_text(encoding="utf-8")).content.strip()
 
 
+def _images(settings: Settings, entry: index_module.Entry) -> tuple[str, ...]:
+    """Return the full paths of the pictures a memory keeps."""
+    return tuple(str(settings.images_root / name) for name in entry.images)
+
+
 def recollect(
     settings: Settings,
     *,
     prompt: str,
     session_id: str,
     spoken: bool,
+    images: list[str] | None = None,
     deadline: float = DEADLINE,
 ) -> Recollection:
     """Recall what a message brings to mind.
@@ -271,6 +301,7 @@ def recollect(
         prompt: The user's message, verbatim.
         session_id: The harness's identifier for this session.
         spoken: Whether Jeffery said it (:func:`spoken`).
+        images: The pictures attached to the message, base64.
         deadline: Seconds allowed for the network calls.
 
     Returns:
@@ -288,6 +319,9 @@ def recollect(
 
     ids = np.fromiter((entry.id for entry in loaded.entries), dtype=np.int64)
     mask = seen.Seen.load(session_id, int(ids.max(initial=0)))
+
+    pictured, notes = _pictured(settings, images or [], loaded, mask)
+    mask.mark([memory.id for memory in pictured])
     eligible = mask.filter(ids)
 
     if spoken:
@@ -298,7 +332,77 @@ def recollect(
 
     mask.mark([memory.id for memory in found])
     mask.save()
-    return Recollection(memories=found, queries=queries)
+    return Recollection(memories=[*pictured, *found], queries=queries, notes=notes)
+
+
+def _pictured(
+    settings: Settings,
+    images: list[str],
+    loaded: index_module.Index,
+    mask: seen.Seen,
+) -> tuple[list[Recollected], tuple[str, ...]]:
+    """Find the memory each attached picture brings to mind.
+
+    Walks down the shelf from the nearest picture until one still has a memory this
+    session hasn't seen, and takes that picture's newest. Each memory found is off
+    limits to the next picture.
+
+    Returns:
+        The memories, and a note for Alpha if Goldeneye couldn't be asked.
+    """
+    shelf = Shelf.load(settings.index_root) if images else None
+    if shelf is None or not shelf.names:
+        return [], ()
+    try:
+        vectors = embed_pictures(
+            settings, images, timeout=PICTURE_DEADLINE, max_retries=0
+        )
+    except APIError as error:
+        note = f"Goldeneye failed, no picture memory this turn: {type(error).__name__}"
+        return [], (note,)
+
+    by_picture: dict[str, list[index_module.Entry]] = {}
+    for entry in loaded.entries:
+        for name in entry.images:
+            by_picture.setdefault(name, []).append(entry)
+
+    found: list[Recollected] = []
+    taken: set[int] = set()
+    for vector in vectors:
+        scores = shelf.vectors @ vector
+        deviation = float(scores.std())
+        for row in np.argsort(-scores):
+            entries = [
+                entry
+                for entry in by_picture.get(shelf.names[int(row)], [])
+                if mask.eligible[entry.id] and entry.id not in taken
+            ]
+            if not entries:
+                continue
+            entry = max(entries, key=lambda item: item.created)
+            body = _read(settings, entry)
+            if body is None:
+                continue
+            score = float(scores[row])
+            taken.add(entry.id)
+            found.append(
+                Recollected(
+                    id=entry.id,
+                    created=entry.created,
+                    body=body,
+                    query=None,
+                    score=score,
+                    sigma=(
+                        (score - float(scores.mean())) / deviation
+                        if deviation
+                        else None
+                    ),
+                    pictured=True,
+                    images=_images(settings, entry),
+                )
+            )
+            break
+    return found, ()
 
 
 def _cued(
@@ -362,6 +466,7 @@ def _cued(
                     else None
                 ),
                 topicality=None if topic is None else float(topic[row]),
+                images=_images(settings, entry),
             )
         )
     topical = _most_topical(settings, loaded, eligible, topic, assigned)
@@ -400,6 +505,7 @@ def _most_topical(
         score=None,
         topicality=float(topic[row]),
         topical=True,
+        images=_images(settings, entry),
     )
 
 
@@ -429,4 +535,5 @@ def _lagniappe(
         body=body,
         query=None,
         score=None,
+        images=_images(settings, entry),
     )

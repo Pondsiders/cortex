@@ -81,6 +81,9 @@ class Settings(BaseSettings):
     embedding_endpoint: str
     embedding_api_key: str
     index_dir: Path | None = None
+    vision_model: str = "goldeneye"
+    vision_endpoint: str | None = None
+    """Where the picture model lives; unset, the embedding endpoint."""
 
     @field_validator("cortex_root", "index_dir", mode="before")
     @classmethod
@@ -94,6 +97,11 @@ class Settings(BaseSettings):
     def memories_root(self) -> Path:
         """Return the directory holding the per-day memory folders."""
         return self.cortex_root / "memories"
+
+    @property
+    def images_root(self) -> Path:
+        """Return the directory holding the pictures memories name."""
+        return self.cortex_root / "images"
 
     @property
     def index_root(self) -> Path:

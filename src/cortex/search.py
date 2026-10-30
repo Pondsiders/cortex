@@ -40,6 +40,7 @@ class Hit:
     score: float
     sigma: float
     body: str
+    images: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -167,6 +168,7 @@ def _rank(
                 score=score,
                 sigma=(score - baseline) / deviation if deviation else 0.0,
                 body=_body(settings, entry),
+                images=tuple(str(settings.images_root / n) for n in entry.images),
             )
         )
 

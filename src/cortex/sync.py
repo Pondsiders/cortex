@@ -14,13 +14,14 @@ full rebuild.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
 
 from cortex import index as index_module
 from cortex import memories as memories_module
+from cortex import pictures as pictures_module
 from cortex.config import Settings
 from cortex.embeddings import BATCH_SIZE, CONCURRENCY, Embedder
 
@@ -36,6 +37,9 @@ class Result:
     embedded: int
     reused: int
     dropped: int
+    pictures: int = 0
+    pictures_embedded: int = 0
+    pictures_missed: str | None = None
 
 
 def sync(
@@ -70,13 +74,25 @@ def sync(
         cortex.index.Busy: If another sync still holds the lock after ``timeout``.
     """
     with index_module.locked(settings.index_root, timeout=timeout):
-        return _sync(
+        result = _sync(
             settings,
             force=force,
             batch_size=batch_size,
             concurrency=concurrency,
             on_start=on_start,
             on_progress=on_progress,
+        )
+        loaded = index_module.Index.load(settings.index_root)
+        shelf = pictures_module.sync(
+            settings,
+            [] if loaded is None else [n for e in loaded.entries for n in e.images],
+            force=force,
+        )
+        return replace(
+            result,
+            pictures=shelf.total,
+            pictures_embedded=shelf.embedded,
+            pictures_missed=shelf.missed,
         )
 
 
@@ -134,6 +150,7 @@ def _sync(
                 content_hash=memory.content_hash,
                 mtime_ns=item.mtime_ns,
                 size=item.size,
+                images=memory.images,
             )
         )
         bodies[memory.id] = memory.body
