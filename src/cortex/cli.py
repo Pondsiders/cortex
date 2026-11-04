@@ -14,7 +14,7 @@ import click
 import pendulum
 from tqdm import tqdm
 
-from cortex import breaker, clock, console, log
+from cortex import clock, console, log, switch
 from cortex import index as index_module
 from cortex import memories as memories_module
 from cortex import pictures as pictures_module
@@ -310,13 +310,16 @@ def hook_prompt() -> None:
     images among them are looked up on the shelf. Prints one back: ``context``, the
     blocks the model reads beside the prompt (the timestamp line, then one per memory),
     ``memories``, the same memories as data for the Recollections pane, and ``off``,
-    the breaker's state (null when Cortex is on).
+    whether recollection is switched off.
 
-    A model that can't be reached trips the breaker (:mod:`cortex.breaker`) instead of
-    raising, and while it's tripped nothing is recollected. Everything else is
-    unguarded: bad input, bad config or an origin nobody has seen raises, and the mod
-    hands the traceback to Alpha in place of the context.
+    Switched off, it does nothing: no context, no memories. Everything else is
+    unguarded: a model that can't be reached, bad input, bad config or an origin nobody
+    has seen raises, and the mod hands the traceback to Alpha in place of the context.
     """
+    if switch.is_off():
+        _answer([], [], off=True)
+        return
+
     started = time.monotonic()
     packet: dict[str, Any] = json.loads(sys.stdin.read())
     prompt = str(packet["text"])
@@ -345,29 +348,18 @@ def hook_prompt() -> None:
     stamp = _timestamp(session_id)
     spoken = recollection_module.spoken(origin, command=command is not None)
 
-    off = breaker.state()
-    if off is not None:
-        _answer([stamp, off.line()], [], off)
-        return
-
     settings = Settings()  # pyright: ignore[reportCallIssue]
-    try:
-        result = recollection_module.recollect(
-            settings,
-            prompt=prompt,
-            session_id=session_id,
-            spoken=spoken,
-            images=[
-                str(a["data"])
-                for a in attachments
-                if a["type"] == "image" and a["data"] is not None
-            ],
-        )
-    except recollection_module.Unreachable as error:
-        off = breaker.trip(error.reason)
-        log.write("breaker.tripped", session_id=session_id, reason=error.reason)
-        _answer([stamp, breaker.tripped_block(off)], [], off)
-        return
+    result = recollection_module.recollect(
+        settings,
+        prompt=prompt,
+        session_id=session_id,
+        spoken=spoken,
+        images=[
+            str(a["data"])
+            for a in attachments
+            if a["type"] == "image" and a["data"] is not None
+        ],
+    )
     blocks = result.blocks()
 
     elapsed = int((time.monotonic() - started) * 1000)
@@ -419,57 +411,46 @@ def hook_prompt() -> None:
         chars=sum(len(block) for block in blocks),
     )
 
-    _answer([stamp, *blocks], [memory.record() for memory in result.memories], None)
+    _answer(
+        [stamp, *blocks],
+        [memory.record() for memory in result.memories],
+        off=False,
+    )
 
 
-def _answer(
-    context: list[str], memories: list[dict[str, Any]], off: breaker.Off | None
-) -> None:
+def _answer(context: list[str], memories: list[dict[str, Any]], *, off: bool) -> None:
     """Print what the mod reads back."""
     console.out(
         json.dumps(
-            {
-                "context": context,
-                "memories": memories,
-                "off": _off_record(off),
-            },
+            {"context": context, "memories": memories, "off": off},
             ensure_ascii=False,
         )
     )
 
 
-def _off_record(off: breaker.Off | None) -> dict[str, str] | None:
-    """The breaker's state as data: None when on."""
-    if off is None:
-        return None
-    return {"at": pendulum.instance(off.at).isoformat(), "reason": off.reason}
+@cortex.group()
+def recollection() -> None:
+    """Switch recollection on or off, in every session at once."""
 
 
-@cortex.command("on")
-def switch_on() -> None:
-    """Switch Cortex back on, after the breaker tripped or someone switched it off."""
-    breaker.reset()
+@recollection.command("on")
+def recollection_on() -> None:
+    """Switch recollection on."""
+    switch.on()
     console.out("on")
 
 
-@cortex.command("off")
-@click.argument("reason", required=False, default="switched off by hand")
-def switch_off(reason: str) -> None:
-    """Switch Cortex off in every session until ``cortex on``, saying why."""
-    console.out(breaker.trip(reason).line())
+@recollection.command("off")
+def recollection_off() -> None:
+    """Switch recollection off: every prompt goes through with nothing added."""
+    switch.off()
+    console.out("off")
 
 
-@cortex.command()
-@click.option(
-    "--json", "as_json", is_flag=True, help="As JSON: null, or at and reason."
-)
-def status(as_json: bool) -> None:
-    """Say whether Cortex is on, and if it's off, since when and why."""
-    off = breaker.state()
-    if as_json:
-        console.out(json.dumps(_off_record(off)))
-    else:
-        console.out("on" if off is None else off.line())
+@recollection.command("status")
+def recollection_status() -> None:
+    """Say whether recollection is on or off."""
+    console.out("off" if switch.is_off() else "on")
 
 
 def _timestamp(session_id: str) -> str:

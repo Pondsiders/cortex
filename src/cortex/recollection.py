@@ -47,7 +47,7 @@ from typing import Any, final
 import frontmatter
 import numpy as np
 import pendulum
-from openai import APIConnectionError, APIError
+from openai import APIError
 
 from cortex import clock, seen
 from cortex import index as index_module
@@ -91,19 +91,6 @@ DEADLINE = 20.0
 
 PICTURE_DEADLINE = 30.0
 """Seconds for Goldeneye, which takes about 11 to wake when nothing has asked it yet."""
-
-
-class Unreachable(Exception):
-    """A model recollection needs didn't answer: refused, unroutable or timed out.
-
-    Only absence. A model that answers wrongly raises its own error, because that's a
-    bug and the breaker would hide it.
-    """
-
-    def __init__(self, role: str, model: str, error: APIConnectionError) -> None:
-        """Name the model that went missing and how."""
-        self.reason: str = f"{role} model {model} unreachable: {type(error).__name__}"
-        super().__init__(self.reason)
 
 
 @final
@@ -420,16 +407,10 @@ def _cued(
     Returns:
         The queries and the memories they found.
     """
-    try:
-        queries = Decomposer(settings, timeout=deadline / 2).decompose(prompt)
-    except APIConnectionError as error:
-        raise Unreachable("chat", settings.chat_model, error) from error
+    queries = Decomposer(settings, timeout=deadline / 2).decompose(prompt)
 
     embedder = Embedder(settings, timeout=deadline / 2, max_retries=0)
-    try:
-        embedded = embedder.embed_queries([*queries, prompt[:TOPIC_CHARS]])
-    except APIConnectionError as error:
-        raise Unreachable("embedding", settings.embedding_model, error) from error
+    embedded = embedder.embed_queries([*queries, prompt[:TOPIC_CHARS]])
     vectors = index_module.normalize(np.asarray(embedded, dtype=np.float32))
 
     scores = vectors @ np.asarray(loaded.vectors).T
