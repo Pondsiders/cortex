@@ -39,6 +39,8 @@ block and not the rest of memory, so that failure goes in a note Alpha reads ins
 
 from __future__ import annotations
 
+import html
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -209,6 +211,23 @@ def spoken(origin: str, *, command: bool) -> bool:
         return False
     msg = f"unknown prompt origin {origin!r}; add it to SPOKEN or UNSPOKEN"
     raise ValueError(msg)
+
+
+_MONITOR_EVENT = re.compile(
+    r"<summary>Monitor event:.*?</summary>\s*<event>(.*?)</event>", re.DOTALL
+)
+
+
+def monitor_event(prompt: str) -> str | None:
+    """Pull the event out of a Monitor notification, or None if it isn't one.
+
+    A Monitor is something Alpha chose to listen to (Telegram, for one), so what it
+    hears is recalled like speech. It arrives as a ``task-notification``, the same
+    origin as subagent hand-backs and finished background jobs, which stay unspoken;
+    only the event line is searched, not the wrapper around it.
+    """
+    match = _MONITOR_EVENT.search(prompt)
+    return html.unescape(match.group(1)).strip() if match else None
 
 
 def _assign(scores: np.ndarray, queries: list[str]) -> dict[int, tuple[int, float]]:

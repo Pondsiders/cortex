@@ -346,12 +346,19 @@ def hook_prompt() -> None:
         )
 
     stamp = _timestamp(session_id)
-    spoken = recollection_module.spoken(origin, command=command is not None)
+    event = (
+        recollection_module.monitor_event(prompt)
+        if origin == "task-notification"
+        else None
+    )
+    spoken = event is not None or recollection_module.spoken(
+        origin, command=command is not None
+    )
 
     settings = Settings()  # pyright: ignore[reportCallIssue]
     result = recollection_module.recollect(
         settings,
-        prompt=prompt,
+        prompt=event or prompt,
         session_id=session_id,
         spoken=spoken,
         images=[

@@ -142,6 +142,30 @@ def test_only_jeffery_talking_is_spoken(
     assert recollection.spoken(origin, command=command) is expected
 
 
+MONITOR = """<task-notification>
+<task-id>b9t3f69eh</task-id>
+<summary>Monitor event: "Telegram DMs to @alphafornow_bot"</summary>
+<event>[telegram · Wed Nov 11 2026, 11:50 AM] jeffery: Rubber &amp; bumpers?</event>
+If this event is something the user would act on now, send a PushNotification.
+</task-notification>"""
+
+HAND_BACK = """<task-notification>
+<task-id>a1b2c3</task-id>
+<summary>Agent "remind-me" completed</summary>
+<result>On Sep 8 we built deep-camel…</result>
+</task-notification>"""
+
+
+def test_a_monitor_event_is_searched_by_its_event_line_alone() -> None:
+    assert recollection.monitor_event(MONITOR) == (
+        "[telegram · Wed Nov 11 2026, 11:50 AM] jeffery: Rubber & bumpers?"
+    )
+
+
+def test_a_subagent_hand_back_is_not_a_monitor_event() -> None:
+    assert recollection.monitor_event(HAND_BACK) is None
+
+
 def test_an_origin_nobody_has_seen_raises() -> None:
     with pytest.raises(ValueError, match="telepathy"):
         _ = recollection.spoken("telepathy", command=False)
